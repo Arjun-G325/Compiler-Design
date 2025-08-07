@@ -12,7 +12,7 @@ vector<string> errors;
 
 %%
 \n    {line++;}
-"if"|"else"|"for"|"while"|"return"    {tokens.emplace_back("KEYWORD",yytext);}
+"if"|"else"|"for"|"while"|"return"|"goto"|"break"|"continue"    {tokens.emplace_back("KEYWORD",yytext);}
 "int"|"char"|"float"|"double"|"void"    {tokens.emplace_back("TYPE",yytext);}
 [a-zA-Z_][a-zA-Z0-9_]*     {tokens.emplace_back("IDENTIFIER",yytext);}
 ([0-9]*\.[0-9]+|[0-9]+\.[0-9]*)([eE][-+]?[0-9]+)?|[0-9]+[eE][-+]?[0-9]+    {tokens.emplace_back("FLOAT_LITERAL",yytext);}
