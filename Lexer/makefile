@@ -1,7 +1,5 @@
-# Makefile in home directory
-
-LEX       = flex
-CXX       = g++
+FLEX = flex
+CXX = g++
 CXXFLAGS  = -Wall -Wno-unused-function -O2
 
 SRC_DIR   = src
@@ -15,7 +13,7 @@ lexer:
 	@if [ -f "$(LEXER_BIN)" ] && [ "$(LEXER_SRC)" -ot "$(LEXER_BIN)" ]; then \
 		echo "Lexer is already built"; \
 	else \
-		$(LEX) --nounput -o $(LEXER_GEN) $(LEXER_SRC) && \
+		$(FLEX) --nounput -o $(LEXER_GEN) $(LEXER_SRC) && \
 		$(CXX) $(CXXFLAGS) $(LEXER_GEN) -o $(LEXER_BIN); \
 	fi
 
