@@ -1,10 +1,10 @@
-int 1abc = 10;              // Invalid identifier (starts with digit)
-int #var = 5;               // Invalid character
-float wrong = 3.14.15;      // Wrong float constant
-char bad = 'ab';            // Overlong char literal
-char none = '';             // Empty char literal
-char esc = '\z';            // Invalid escape sequence
-string unterminated = "Oops // Unterminated string
+int 1abc = 10;              
+int #var = 5;               
+float wrong = 3.14.15;      
+char bad = 'ab';            
+char none = '';             
+char esc = '\z';            
+string unterminated = "Oops 
 /* unclosed comment
 
-x@ = 10;                    // Invalid character
+x@ = 10;                   
