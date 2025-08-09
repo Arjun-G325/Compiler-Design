@@ -1,23 +1,23 @@
 #!/bin/bash
 
-# Path to lexer executable
+
 LEXER_EXEC="./src/lexer"
 
-# Directories
+
 TEST_DIR="./test"
 OUTPUT_DIR="./output"
 
-# Check if lexer exists
+
 if [ ! -f "$LEXER_EXEC" ]; then
     echo "Error: Lexer executable not found at $LEXER_EXEC"
     echo "Please build the lexer first using 'make lexer'"
     exit 1
 fi
 
-# Create output directory if it doesn't exist
+
 mkdir -p "$OUTPUT_DIR"
 
-# Run lexer on each test file
+
 for TEST_FILE in "$TEST_DIR"/*; do
     if [ -f "$TEST_FILE" ]; then
         BASENAME=$(basename "$TEST_FILE")
