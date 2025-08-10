@@ -21,7 +21,7 @@ vector<string> errors;
 "+"|"-"|"*"|"/"|"%"       {tokens.emplace_back("ARITH_OP",yytext);}
 "=="|"!="|"<"|"<="|">"|">="   {tokens.emplace_back("REL_OP",yytext);}
 "&&"|"||"|"!"      {tokens.emplace_back("LOGICAL_OP",yytext);}
-"&"|"|"|"^"       {tokens.emplace_back("BITWISE_OP",yytext);}
+"&"|"|"|"^"|"~"       {tokens.emplace_back("BITWISE_OP",yytext);}
 "++"|"--"     {tokens.emplace_back("UNARY_OP",yytext);}
 
 "("   {tokens.emplace_back("LPAREN",yytext);}
