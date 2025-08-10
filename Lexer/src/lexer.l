@@ -18,7 +18,7 @@ vector<string> errors;
 ([0-9]*\.[0-9]+|[0-9]+\.[0-9]*)([eE][-+]?[0-9]+)?|[0-9]+[eE][-+]?[0-9]+    {tokens.emplace_back("FLOAT_LITERAL",yytext);}
 [0-9]+     {tokens.emplace_back("INT_LITERAL",yytext);}
 
-"+"|"-"|"*"|"/"       {tokens.emplace_back("ARITH_OP",yytext);}
+"+"|"-"|"*"|"/"|"%"       {tokens.emplace_back("ARITH_OP",yytext);}
 "=="|"!="|"<"|"<="|">"|">="   {tokens.emplace_back("REL_OP",yytext);}
 "&&"|"||"|"!"      {tokens.emplace_back("LOGICAL_OP",yytext);}
 "&"|"|"|"^"       {tokens.emplace_back("BITWISE_OP",yytext);}
