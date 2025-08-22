@@ -1,14 +1,32 @@
 %{
 #include <iostream>
 #include <cstdlib>
-
+#include "../../Lexer/src/tokens.h" 
 int yylex(void);
 void yyerror(const char *s) {
     std::cerr << "Parse error: " << s << std::endl;
 }
 %}
 
-%token DUMMY
+%union {
+    char* str;
+    int   num;
+}
+
+%token <str> IDENTIFIER STRING_LITERAL CHAR_LITERAL FLOAT_LITERAL
+%token <num> INT_LITERAL
+
+%token IF ELSE FOR WHILE RETURN GOTO BREAK CONTINUE SWITCH CASE DEFAULT
+%token STRUCT TYPEDEF STATIC CONST AUTO CLASS PRIVATE PROTECTED PUBLIC LAMBDA
+%token INT CHAR FLOAT DOUBLE VOID SIGNED_INT UNSIGNED_INT
+%token PLUS MINUS MUL DIV MOD
+%token EQ NEQ LT LEQ GT GEQ
+%token AND OR NOT
+%token BIT_AND BIT_OR BIT_XOR BIT_NOT
+%token INC DEC ASSIGN
+%token LPAREN RPAREN LBRACE RBRACE LBRACKET RBRACKET
+%token COLON SEMICOLON COMMA
+%token ERROR
 
 %start program
 
@@ -16,4 +34,3 @@ void yyerror(const char *s) {
 program:
     ;
 %%
-
