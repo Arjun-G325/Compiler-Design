@@ -21,6 +21,7 @@ extern YYSTYPE yylval;
 "else"          { return ELSE; }
 "for"           { return FOR; }
 "while"         { return WHILE; }
+"do"            { retur DO; }
 "return"        { return RETURN; }
 "goto"          { return GOTO; }
 "break"         { return BREAK; }
