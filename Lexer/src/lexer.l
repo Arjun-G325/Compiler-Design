@@ -45,7 +45,6 @@ extern YYSTYPE yylval;
 "float"         { return T_FLOAT; }
 "double"        { return T_DOUBLE; }
 "void"          { return T_VOID; }
-"signed int"    { return T_SIGNED_INT; }
 "unsigned int"  { return T_UNSIGNED_INT; }
 
 [a-zA-Z_][a-zA-Z0-9_]*  { yylval.str = strdup(yytext); return IDENTIFIER; }
