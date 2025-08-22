@@ -1,71 +1,109 @@
 %{
-#include <iostream>
-#include <vector>
-#include <string>
-#include <iomanip>
-using namespace std;
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include "tokens.h"
 
+extern YYSTYPE yylval;
 int line=1;
-vector<pair<string,string>> tokens;
-vector<string> errors;
+static char* duptext(const char* s){
+    return s?strdup(s):NULL; 
+}
 %}
-
-%%
-\n    {line++;}
-"if"|"else"|"for"|"while"|"return"|"goto"|"break"|"continue"|"switch"|"case"|"default"|"struct"|"typedef"|"static"|"const"|"auto"|"class"|"private"|"protected"|"public"|"lambda"   {tokens.emplace_back("KEYWORD",yytext);}
-"int"|"char"|"float"|"double"|"void"|"signed int"|"unsigned int"    {tokens.emplace_back("TYPE",yytext);}
-[a-zA-Z_][a-zA-Z0-9_]*     {tokens.emplace_back("IDENTIFIER",yytext);}
-([0-9]*\.[0-9]+|[0-9]+\.[0-9]*)([eE][-+]?[0-9]+)?|[0-9]+[eE][-+]?[0-9]+    {tokens.emplace_back("FLOAT_LITERAL",yytext);}
-[0-9]+     {tokens.emplace_back("INT_LITERAL",yytext);}
-
-"+"|"-"|"*"|"/"|"%"       {tokens.emplace_back("ARITH_OP",yytext);}
-"=="|"!="|"<"|"<="|">"|">="   {tokens.emplace_back("REL_OP",yytext);}
-"&&"|"||"|"!"      {tokens.emplace_back("LOGICAL_OP",yytext);}
-"&"|"|"|"^"|"~"       {tokens.emplace_back("BITWISE_OP",yytext);}
-"++"|"--"     {tokens.emplace_back("UNARY_OP",yytext);}
-
-"("   {tokens.emplace_back("LPAREN",yytext);}
-")"   {tokens.emplace_back("RPAREN",yytext);}
-"{"   {tokens.emplace_back("LBRACE",yytext);}
-"}"   {tokens.emplace_back("RBRACE",yytext);}
-"["   {tokens.emplace_back("LBRACKET",yytext);}
-"]"   {tokens.emplace_back("RBRACKET",yytext);}
-":"   {tokens.emplace_back("COLON",yytext);}
-";"   {tokens.emplace_back("SEMICOLON",yytext);}
-","   {tokens.emplace_back("COMMA",yytext);}
-"="   {tokens.emplace_back("ASSIGN",yytext);}
-\"([^\\\n"]|\\.)*\"   {tokens.emplace_back("STRING_LITERAL",yytext);}
-\'([^\\\n']|\\[nt0\\'\"])\'   {tokens.emplace_back("CHAR_LITERAL",yytext);}
-
-"/*"([^*]|\*+[^*/])*\*+"/" {}
-"//".*    {}
-[ \t\r]+    {}
-
-"/*"([^*]|\*+[^*/])*\*?    {errors.push_back("Unterminated comment at line "+to_string(line));}
-\"([^\\\n"]|\\.)*     {errors.push_back("Unterminated string literal at line "+to_string(line));}
-"''"      {errors.push_back("Empty character literal at line "+to_string(line));}
-\'[^\\\n']{2,}\'   {errors.push_back("Overlong character literal at line "+to_string(line));}
-\'\\[^nt0\\\'"]\'   {errors.push_back("Invalid escape sequence at line "+to_string(line));}
-[0-9]+[a-zA-Z_]+    {errors.push_back("Invalid identifier at line "+to_string(line));}
-[0-9]*\.(?:[0-9]*\.)+[0-9]*    {errors.push_back("Wrong float constant at line "+to_string(line));}
-.     {errors.push_back(string("Invalid character '")+yytext+"' at line "+to_string(line));}
+%option noyywrap nodefault
 
 %%
 
-int yywrap() {
-    return 1;
-}
+\n                            { line++; }
 
-int main() {
-    yylex();
-    if(!errors.empty()){
-        cout<<"Lexical Errors:\n";
-        for(const auto& e:errors) cout<<e<<'\n';
-    } 
-    else {
-        cout<<left<<setw(16)<<"Lexeme"<<setw(16)<<"Token"<<'\n';
-        for(const auto& t:tokens) cout<<left<<setw(16)<<t.second<<setw(16)<<t.first<<'\n';
-    }
-    return 0;
-}
+"if"                          { return IF; }
+"else"                        { return ELSE; }
+"for"                         { return FOR; }
+"while"                       { return WHILE; }
+"return"                      { return RETURN; }
+"goto"                        { return GOTO; }
+"break"                       { return BREAK; }
+"continue"                    { return CONTINUE; }
+"switch"                      { return SWITCH; }
+"case"                        { return CASE; }
+"default"                     { return DEFAULT; }
+"struct"                      { return STRUCT; }
+"typedef"                     { return TYPEDEF; }
+"static"                      { return STATIC; }
+"const"                       { return CONST; }
+"auto"                        { return AUTO; }
+"class"                       { return CLASS; }
+"private"                     { return PRIVATE; }
+"protected"                   { return PROTECTED; }
+"public"                      { return PUBLIC; }
+"lambda"                      { return LAMBDA; }
+
+"int"                         { return INT; }
+"char"                        { return CHAR; }
+"float"                       { return FLOAT; }
+"double"                      { return DOUBLE; }
+"void"                        { return VOID; }
+"signed int"                  { return SIGNED_INT; }
+"unsigned int"                { return UNSIGNED_INT; }
+
+[a-zA-Z_][a-zA-Z0-9_]*        { yylval = duptext(yytext); return IDENTIFIER; }
+
+([0-9]*\.[0-9]+|[0-9]+\.[0-9]*)([eE][-+]?[0-9]+)?|[0-9]+[eE][-+]?[0-9]+   { yylval = duptext(yytext); return FLOAT_LITERAL; }
+
+[0-9]+                        { yylval = duptext(yytext); return INT_LITERAL; }
+
+\"([^\\\n"]|\\.)*\"           { yylval = duptext(yytext); return STRING_LITERAL; }
+
+\'([^\\\n']|\\[nt0\\'\"])\'   { yylval = duptext(yytext); return CHAR_LITERAL; }
+
+"++"                          { return INC; }
+"--"                          { return DEC; }
+
+"=="                          { return EQ; }
+"!="                          { return NEQ; }
+"<="                          { return LEQ; }
+">="                          { return GEQ; }
+"<"                           { return LT; }
+">"                           { return GT; }
+
+"&&"                          { return AND; }
+"||"                          { return OR; }
+"!"                           { return NOT; }
+
+"&"                           { return BIT_AND; }
+"|"                           { return BIT_OR; }
+"^"                           { return BIT_XOR; }
+"~"                           { return BIT_NOT; }
+
+"+"                           { return PLUS; }
+"-"                           { return MINUS; }
+"*"                           { return MUL; }
+"/"                           { return DIV; }
+"%"                           { return MOD; }
+
+"("                           { return LPAREN; }
+")"                           { return RPAREN; }
+"{"                           { return LBRACE; }
+"}"                           { return RBRACE; }
+"["                           { return LBRACKET; }
+"]"                           { return RBRACKET; }
+":"                           { return COLON; }
+";"                           { return SEMICOLON; }
+","                           { return COMMA; }
+"="                           { return ASSIGN; }
+
+"/*"([^*]|\*+[^*/])*\*+"/"    {}
+"//".*                        {}
+[ \t\r]+                      {}
+
+"/*"([^*]|\*+[^*/])*\*?       { fprintf(stderr,"Lexical error (unterminated comment) at line %d\n",line); return ERROR_TOK; }
+\"([^\\\n"]|\\.)*             { fprintf(stderr,"Lexical error (unterminated string) at line %d\n",line); return ERROR_TOK; }
+"''"                          { fprintf(stderr,"Lexical error (empty char literal) at line %d\n",line); return ERROR_TOK; }
+\'[^\\\n']{2,}\'              { fprintf(stderr,"Lexical error (overlong char literal) at line %d\n",line); return ERROR_TOK; }
+\'\\[^nt0\\\'"]\'             { fprintf(stderr,"Lexical error (invalid escape) at line %d\n",line); return ERROR_TOK; }
+[0-9]+[a-zA-Z_]+              { fprintf(stderr,"Lexical error (invalid identifier) at line %d\n",line); return ERROR_TOK; }
+[0-9]*\.(?:[0-9]*\.)+[0-9]*   { fprintf(stderr,"Lexical error (wrong float constant) at line %d\n",line); return ERROR_TOK; }
+.                              { fprintf(stderr,"Lexical error (invalid char '%s') at line %d\n",yytext,line); return ERROR_TOK; }
+
+%%
 
