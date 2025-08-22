@@ -11,7 +11,7 @@ LEXER_C = src/lex.yy.c
 
 TARGET = parser
 
-lexer: $(PARSER_C) $(LEXER_C)
+parser: $(PARSER_C) $(LEXER_C)
 	$(CXX) $(PARSER_C) $(LEXER_C) -o $(TARGET)
 
 $(PARSER_C) $(PARSER_H): $(PARSER_SRC)
