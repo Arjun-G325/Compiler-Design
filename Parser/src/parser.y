@@ -219,6 +219,31 @@ postfix_expression
     | postfix_expression DEC
     ;
 
+class_definition:
+      CLASS IDENTIFIER LBRACE class_body RBRACE
+    ;
+
+class_body:
+      access_specifier COLON member_list
+    | member_list
+    ;
+
+access_specifier:
+      PUBLIC
+    | PRIVATE
+    | PROTECTED
+    ;
+
+member_list:
+      member_list member_declaration
+    | member_declaration
+    ;
+
+member_declaration:
+      type_specifier IDENTIFIER SEMICOLON
+    | function_definition
+    ;
+
 argument_list_opt
     : /* empty */
     | argument_list
