@@ -34,3 +34,7 @@ void yyerror(const char *s) {
 program:
     ;
 %%
+
+int main() {
+    return yyparse();
+}
