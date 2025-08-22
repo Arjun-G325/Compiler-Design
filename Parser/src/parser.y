@@ -30,7 +30,7 @@ void yyerror(const char *s) {
 %start program
 
 %%
-program:
+program
     : external_declaration_list
     ;
 
