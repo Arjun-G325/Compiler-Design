@@ -1,7 +1,7 @@
 %{
 #include <iostream>
 #include <string>
-#include "tokens.h"
+#include "../../Parser/src/y.tab.h"
 
 using namespace std;
 
