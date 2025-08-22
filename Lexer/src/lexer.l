@@ -1,19 +1,21 @@
 %{
 #include <iostream>
+#include <cstdlib>
 #include <string>
 #include "../../Parser/src/y.tab.h"
-
-using namespace std;
 
 int line = 1;
 extern YYSTYPE yylval;
 %}
 
 %option noyywrap
+%x COMMENT
+%x STRING
+%x CHAR
 
 %%
 
-\n      { line++; }
+\n              { line++; }
 
 "if"            { return IF; }
 "else"          { return ELSE; }
@@ -37,44 +39,43 @@ extern YYSTYPE yylval;
 "public"        { return PUBLIC; }
 "lambda"        { return LAMBDA; }
 
-"int"           { return INT; }
-"char"          { return CHAR; }
-"float"         { return FLOAT; }
-"double"        { return DOUBLE; }
-"void"          { return VOID; }
-"signed int"    { return SIGNED_INT; }
-"unsigned int"  { return UNSIGNED_INT; }
+"int"           { return T_INT; }
+"char"          { return T_CHAR; }
+"float"         { return T_FLOAT; }
+"double"        { return T_DOUBLE; }
+"void"          { return T_VOID; }
+"signed int"    { return T_SIGNED_INT; }
+"unsigned int"  { return T_UNSIGNED_INT; }
 
-[a-zA-Z_][a-zA-Z0-9_]*   { yylval.str = strdup(yytext); return IDENTIFIER; }
+[a-zA-Z_][a-zA-Z0-9_]*  { yylval.str = strdup(yytext); return IDENTIFIER; }
 
-([0-9]*\.[0-9]+|[0-9]+\.[0-9]*)([eE][-+]?[0-9]+)?|[0-9]+[eE][-+]?[0-9]+ { yylval.str = strdup(yytext); return FLOAT_LITERAL; }
+[0-9]+                   { yylval.num = atoi(yytext); return INT_LITERAL; }
 
-[0-9]+   { yylval.num = atoi(yytext); return INT_LITERAL; }
+([0-9]+)?\\.[0-9]+([eE][-+]?[0-9]+)? { yylval.str = strdup(yytext); return FLOAT_LITERAL; }
+[0-9]+\\.[0-9]*([eE][-+]?[0-9]+)?   { yylval.str = strdup(yytext); return FLOAT_LITERAL; }
+[0-9]+[eE][-+]?[0-9]+               { yylval.str = strdup(yytext); return FLOAT_LITERAL; }
 
+"=="    { return EQ; }
+"!="    { return NEQ; }
+"<="    { return LEQ; }
+">="    { return GEQ; }
+"<"     { return LT; }
+">"     { return GT; }
+"&&"    { return AND; }
+"||"    { return OR; }
+"!"     { return NOT; }
+"&"     { return BIT_AND; }
+"|"     { return BIT_OR; }
+"^"     { return BIT_XOR; }
+"~"     { return BIT_NOT; }
+"++"    { return INC; }
+"--"    { return DEC; }
 "+"     { return PLUS; }
 "-"     { return MINUS; }
 "*"     { return MUL; }
 "/"     { return DIV; }
 "%"     { return MOD; }
-
-"=="    { return EQ; }
-"!="    { return NEQ; }
-"<"     { return LT; }
-"<="    { return LEQ; }
-">"     { return GT; }
-">="    { return GEQ; }
-
-"&&"    { return AND; }
-"||"    { return OR; }
-"!"     { return NOT; }
-
-"&"     { return BIT_AND; }
-"|"     { return BIT_OR; }
-"^"     { return BIT_XOR; }
-"~"     { return BIT_NOT; }
-
-"++"    { return INC; }
-"--"    { return DEC; }
+"="     { return ASSIGN; }
 
 "("     { return LPAREN; }
 ")"     { return RPAREN; }
@@ -85,24 +86,37 @@ extern YYSTYPE yylval;
 ":"     { return COLON; }
 ";"     { return SEMICOLON; }
 ","     { return COMMA; }
-"="     { return ASSIGN; }
 
-\"([^\\\n"]|\\.)*\"   { yylval.str = strdup(yytext); return STRING_LITERAL; }
-\'([^\\\n']|\\[nt0\\'\"])?\' { yylval.str = strdup(yytext); return CHAR_LITERAL; }
+"//".*                 { }
 
-"/*"([^*]|\*+[^*/])*\*+"/"   {}
-"//".*                      {}
+"/*"                   { BEGIN(COMMENT); }
+<COMMENT>[^*\n]+       { }
+<COMMENT>"*"+[^*/]*    { }
+<COMMENT>"*"+"/"       { BEGIN(INITIAL); }
+<COMMENT>\n            { line++; }
+<COMMENT><<EOF>>       { std::cerr << "Unterminated comment at line " << line << std::endl; return ERROR; }
 
-[ \t\r]+    {}
+\"                     { BEGIN(STRING); yymore(); }
+<STRING>[^"\n\\]+      { yymore(); }
+<STRING>\\.            { yymore(); }
+<STRING>\"             { yylval.str = strdup(yytext); BEGIN(INITIAL); return STRING_LITERAL; }
+<STRING>\n             { std::cerr << "Unterminated string literal at line " << line << std::endl; BEGIN(INITIAL); return ERROR; }
+<STRING><<EOF>>        { std::cerr << "Unterminated string literal at line " << line << std::endl; BEGIN(INITIAL); return ERROR; }
 
-"/*"([^*]|\*+[^*/])*\*?    { cerr << "Unterminated comment at line " << line << endl; return ERROR; }
-\"([^\\\n"]|\\.)*          { cerr << "Unterminated string literal at line " << line << endl; return ERROR; }
-"''"                       { cerr << "Empty char literal at line " << line << endl; return ERROR; }
-\'[^\\\n']{2,}\'           { cerr << "Overlong char literal at line " << line << endl; return ERROR; }
-\'\\[^nt0\\\'"]\'          { cerr << "Invalid escape sequence at line " << line << endl; return ERROR; }
-[0-9]+[a-zA-Z_]+           { cerr << "Invalid identifier at line " << line << endl; return ERROR; }
-[0-9]*\.(?:[0-9]*\.)+[0-9]* { cerr << "Malformed float constant at line " << line << endl; return ERROR; }
-.                          { cerr << "Invalid char '" << yytext << "' at line " << line << endl; return ERROR; }
+\'                     { BEGIN(CHAR); yymore(); }
+<CHAR>[^\\\n']         { yymore(); }
+<CHAR>\\.              { yymore(); }
+<CHAR>\'               { yylval.str = strdup(yytext); BEGIN(INITIAL); return CHAR_LITERAL; }
+<CHAR>\n               { std::cerr << "Unterminated char literal at line " << line << std::endl; BEGIN(INITIAL); return ERROR; }
+<CHAR><<EOF>>          { std::cerr << "Unterminated char literal at line " << line << std::endl; BEGIN(INITIAL); return ERROR; }
+
+\'\'                       { std::cerr << "Empty char literal at line " << line << std::endl; return ERROR; }
+\'[^\\\n']{2,}\'           { std::cerr << "Overlong char literal at line " << line << std::endl; return ERROR; }
+\'\\[^nt0\\\'"]\'          { std::cerr << "Invalid escape sequence at line " << line << std::endl; return ERROR; }
+
+[ \t\r]+ { }
+
+[0-9]+[a-zA-Z_]+         { std::cerr << "Invalid identifier at line " << line << std::endl; return ERROR; }
+.                         { std::cerr << "Invalid char '" << yytext << "' at line " << line << std::endl; return ERROR; }
 
 %%
-
