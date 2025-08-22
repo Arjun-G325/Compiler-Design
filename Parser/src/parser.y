@@ -1,31 +1,61 @@
 %{
-#include <iostream>
+#include <cstdio>
 #include <cstdlib>
-int yylex(void);
+#include <string>
+#include <vector>
+#include <iostream>
+#include <cstring>
+using namespace std;
+
+struct Token {
+    string lexeme;
+    string type;
+};
+extern int yylex();
+extern int yylineno;
+extern char* yytext;
+extern FILE* yyin;
+
+extern vector<pair<string, string>> tokenTable;
+int error_count = 0;
+
 void yyerror(const char *s) {
-    std::cerr << "Parse error: " << s << std::endl;
+    cerr << "Syntax Error at line " << yylineno << ": " << s << " near '" << yytext << "'" << endl;
+    error_count++;
 }
 %}
 
 %union {
+    int ival;
+    double fval;
     char* str;
-    int   num;
 }
-
-%token <str> IDENTIFIER STRING_LITERAL CHAR_LITERAL FLOAT_LITERAL
-%token <num> INT_LITERAL
-
-%token IF ELSE FOR WHILE DO RETURN GOTO BREAK CONTINUE SWITCH CASE DEFAULT
-%token STRUCT TYPEDEF STATIC CONST AUTO CLASS PRIVATE PROTECTED PUBLIC LAMBDA
+%define parse.error verbose
+%token CONST IF ELSE WHILE FOR RETURN BREAK CONTINUE GOTO SWITCH CASE DEFAULT DO SIZEOF
+%token STATIC EXTERN REGISTER AUTO STRUCT UNION ENUM TYPEDEF CLASS PUBLIC PROTECTED PRIVATE LAMBDA
 %token T_INT T_CHAR T_FLOAT T_DOUBLE T_VOID T_UNSIGNED_INT
-%token PLUS MINUS MUL DIV MOD
-%token EQ NEQ LT LEQ GT GEQ
+%token <ival> INT_LITERAL
+%token <fval> FLOAT_LITERAL
+%token <str> IDENTIFIER
+%token <str> STRING_LITERAL
+%token <str> CHAR_LITERAL
+%token ASSIGN PLUS MINUS MUL DIV MOD
+%token EQ NEQ LT GT LEQ GEQ
 %token AND OR NOT
-%token BIT_AND BIT_OR BIT_XOR BIT_NOT
-%token INC DEC ASSIGN
-%token LPAREN RPAREN LBRACE RBRACE LBRACKET RBRACKET
-%token COLON SEMICOLON COMMA
+%token BIT_AND BIT_OR BIT_XOR BIT_NOT SHL SHR
+%token INC DEC
+%token QUESTION COLON
+%token LPAREN RPAREN LBRACE RBRACE LBRACKET RBRACKET SEMICOLON COMMA DOT ARROW
 %token ERROR
+%type <ival> expression
+
+%left OR
+%left AND
+%left EQ NEQ
+%left LT LEQ GT GEQ
+%left PLUS MINUS
+%left MUL DIV MOD
+%right NOT UMINUS
 
 %start program
 
@@ -35,58 +65,49 @@ program:
     ;
 
 external_declaration_list:
-     external_declaration_list external_declaration
-    | external_declaration
-    ;
+      external_declaration
+    | external_declaration_list external_declaration
+;
 
 external_declaration:
-     function_definition
-    | declaration SEMICOLON
-    ;
+      function_definition
+    | declaration
+;
+
+function_definition:
+      type_specifier IDENTIFIER LPAREN parameter_list RPAREN compound_statement
+;
 
 declaration:
-    type_specifier declarator_list
-    ;
+      type_specifier init_declarator_list SEMICOLON
+    | type_specifier SEMICOLON
+;
 
 type_specifier:
-     T_INT
+      T_INT
     | T_CHAR
     | T_FLOAT
     | T_DOUBLE
     | T_VOID
     | T_UNSIGNED_INT
-    | STRUCT IDENTIFIER
-    | CLASS IDENTIFIER
-    ;
+;
 
-declarator_list:
-    declarator
-    | declarator_list COMMA declarator
-    ;
-
-declarator:
-    IDENTIFIER
+init_declarator_list:
+      init_declarator
+    | init_declarator_list COMMA init_declarator
+;
+init_declarator:
+      IDENTIFIER
     | IDENTIFIER ASSIGN expression
-    | IDENTIFIER LBRACKET INT_LITERAL RBRACKET
-    ;
-
-function_definition:
-    type_specifier IDENTIFIER LPAREN parameter_list_opt RPAREN compound_statement
-    ;
-
-parameter_list_opt:
-    /* empty */
-    | parameter_list
-    ;
-
+;
 parameter_list:
-    parameter
-    | parameter_list COMMA parameter
-    ;
+    | parameter_declaration
+    | parameter_list COMMA parameter_declaration
+;
 
-parameter:
-    type_specifier IDENTIFIER
-    ;
+parameter_declaration:
+      type_specifier IDENTIFIER
+;
 
 compound_statement:
     LBRACE statement_list_opt RBRACE
@@ -265,6 +286,21 @@ primary_expression:
 
 %%
 
-int main() {
-    return yyparse();
+int main(int argc, char** argv) {
+    if (argc>1) {
+        yyin=fopen(argv[1], "r");
+        if (!yyin) {
+            perror("fopen");
+            return 1;
+        }
+    }
+    yyparse();
+
+    if (error_count==0) {
+        cout<<"\nToken                Token_Type"<<endl;
+        for (const auto& t:tokenTable) {
+            cout<<t.first<<"                " <<t.second<<endl;
+        }
+    }
+    return 0;
 }
