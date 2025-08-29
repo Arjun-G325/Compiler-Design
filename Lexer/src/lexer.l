@@ -1,3 +1,4 @@
+%{
 #include <iostream>
 #include <cstdlib>
 #include <string>
@@ -11,82 +12,12 @@ std::vector<std::pair<std::string, std::string>> tokenTable;
 %}
 
 %option noyywrap
-@@ -17,75 +20,90 @@ extern YYSTYPE yylval;
+%x STRING CHAR
+
+%%
 
 \n              { line++; }
-
-"if"            { return IF; }
-"else"          { return ELSE; }
-"for"           { return FOR; }
-"while"         { return WHILE; }
-"do"            { retur DO; }
-"return"        { return RETURN; }
-"goto"          { return GOTO; }
-"break"         { return BREAK; }
-"continue"      { return CONTINUE; }
-"switch"        { return SWITCH; }
-"case"          { return CASE; }
-"default"       { return DEFAULT; }
-"struct"        { return STRUCT; }
-"typedef"       { return TYPEDEF; }
-"static"        { return STATIC; }
-"const"         { return CONST; }
-"auto"          { return AUTO; }
-"class"         { return CLASS; }
-"private"       { return PRIVATE; }
-"protected"     { return PROTECTED; }
-"public"        { return PUBLIC; }
-"lambda"        { return LAMBDA; }
-
-"int"           { return T_INT; }
-"char"          { return T_CHAR; }
-"float"         { return T_FLOAT; }
-"double"        { return T_DOUBLE; }
-"void"          { return T_VOID; }
-"unsigned int"  { return T_UNSIGNED_INT; }
-
-[a-zA-Z_][a-zA-Z0-9_]*  { yylval.str = strdup(yytext); return IDENTIFIER; }
-
-[0-9]+                   { yylval.num = atoi(yytext); return INT_LITERAL; }
-
-([0-9]+)?\\.[0-9]+([eE][-+]?[0-9]+)? { yylval.str = strdup(yytext); return FLOAT_LITERAL; }
-[0-9]+\\.[0-9]*([eE][-+]?[0-9]+)?   { yylval.str = strdup(yytext); return FLOAT_LITERAL; }
-[0-9]+[eE][-+]?[0-9]+               { yylval.str = strdup(yytext); return FLOAT_LITERAL; }
-
-"->"    { return ARROW; }
-"=="    { return EQ; }
-"!="    { return NEQ; }
-"<<"    { return SHL; }
-">>"    { return SHR; }
-"<="    { return LEQ; }
-">="    { return GEQ; }
-"<"     { return LT; }
-">"     { return GT; }
-"&&"    { return AND; }
-"||"    { return OR; }
-"!"     { return NOT; }
-"&"     { return BIT_AND; }
-"|"     { return BIT_OR; }
-"^"     { return BIT_XOR; }
-"~"     { return BIT_NOT; }
-"++"    { return INC; }
-"--"    { return DEC; }
-"+"     { return PLUS; }
-"-"     { return MINUS; }
-"*"     { return MUL; }
-"/"     { return DIV; }
-"%"     { return MOD; }
-"="     { return ASSIGN; }
-
-"("     { return LPAREN; }
-")"     { return RPAREN; }
-"{"     { return LBRACE; }
-"}"     { return RBRACE; }
-"["     { return LBRACKET; }
-"]"     { return RBRACKET; }
-":"     { return COLON; }
-";"     { return SEMICOLON; }
-","     { return COMMA; }
+[ \t]+          { }
 "if"            { tokenTable.push_back({yytext,"KEYWORD"}); return IF; }
 "else"          { tokenTable.push_back({yytext,"KEYWORD"}); return ELSE; }
 "for"           { tokenTable.push_back({yytext,"KEYWORD"}); return FOR; }
@@ -109,38 +40,29 @@ std::vector<std::pair<std::string, std::string>> tokenTable;
 "protected"     { tokenTable.push_back({yytext,"KEYWORD"}); return PROTECTED; }
 "public"        { tokenTable.push_back({yytext,"KEYWORD"}); return PUBLIC; }
 "lambda"        { tokenTable.push_back({yytext,"KEYWORD"}); return LAMBDA; }
+"enum"          { tokenTable.push_back({yytext,"KEYWORD"}); return ENUM; }
+"union"         { tokenTable.push_back({yytext,"KEYWORD"}); return UNION; }
+"sizeof"        { tokenTable.push_back({yytext,"KEYWORD"}); return SIZEOF; }
 
+"void"          { tokenTable.push_back({yytext,"TYPE"}); return T_VOID; }
 "int"           { tokenTable.push_back({yytext,"TYPE"}); return T_INT; }
 "char"          { tokenTable.push_back({yytext,"TYPE"}); return T_CHAR; }
 "float"         { tokenTable.push_back({yytext,"TYPE"}); return T_FLOAT; }
 "double"        { tokenTable.push_back({yytext,"TYPE"}); return T_DOUBLE; }
-"void"          { tokenTable.push_back({yytext,"TYPE"}); return T_VOID; }
 "unsigned int"  { tokenTable.push_back({yytext,"TYPE"}); return T_UNSIGNED_INT; }
 
-[a-zA-Z_][a-zA-Z0-9_]*  { yylval.str = strdup(yytext); tokenTable.push_back({yytext,"IDENTIFIER"}); return IDENTIFIER; }
+[a-zA-Z_][a-zA-Z0-9_]* { yylval.str = strdup(yytext); tokenTable.push_back({yytext,"IDENTIFIER"}); return IDENTIFIER; }
 
 [0-9]+                   { yylval.ival = atoi(yytext); tokenTable.push_back({yytext,"INT_LITERAL"}); return INT_LITERAL; }
+([0-9]+)?\.[0-9]+([eE][-+]?[0-9]+)? { yylval.fval = atof(yytext); tokenTable.push_back({yytext,"FLOAT_LITERAL"}); return FLOAT_LITERAL; }
+[0-9]+\.[0-9]*([eE][-+]?[0-9]+)?   { yylval.fval = atof(yytext); tokenTable.push_back({yytext,"FLOAT_LITERAL"}); return FLOAT_LITERAL; }
+[0-9]+[eE][-+]?[0-9]+               { yylval.fval = atof(yytext); tokenTable.push_back({yytext,"FLOAT_LITERAL"}); return FLOAT_LITERAL; }
 
-([0-9]+)?\.[0-9]+([eE][-+]?[0-9]+)? {
-    yylval.fval = atof(yytext);
-    tokenTable.push_back({yytext,"FLOAT_LITERAL"});
-    return FLOAT_LITERAL;
-}
-
-[0-9]+\.[0-9]*([eE][-+]?[0-9]+)? {
-    yylval.fval = atof(yytext);
-    tokenTable.push_back({yytext,"FLOAT_LITERAL"});
-    return FLOAT_LITERAL;
-}
-
-[0-9]+[eE][-+]?[0-9]+ {
-    yylval.fval = atof(yytext);
-    tokenTable.push_back({yytext,"FLOAT_LITERAL"});
-    return FLOAT_LITERAL;
-}
-
+"->"    { return ARROW; }
 "=="    { tokenTable.push_back({yytext,"OPERATOR"}); return EQ; }
 "!="    { tokenTable.push_back({yytext,"OPERATOR"}); return NEQ; }
+"<<"    { return SHL; }
+">>"    { return SHR; }
 "<="    { tokenTable.push_back({yytext,"OPERATOR"}); return LEQ; }
 ">="    { tokenTable.push_back({yytext,"OPERATOR"}); return GEQ; }
 "<"     { tokenTable.push_back({yytext,"OPERATOR"}); return LT; }
@@ -148,19 +70,18 @@ std::vector<std::pair<std::string, std::string>> tokenTable;
 "&&"    { tokenTable.push_back({yytext,"OPERATOR"}); return AND; }
 "||"    { tokenTable.push_back({yytext,"OPERATOR"}); return OR; }
 "!"     { tokenTable.push_back({yytext,"OPERATOR"}); return NOT; }
-"&"     { tokenTable.push_back({yytext,"OPERATOR"}); return BIT_AND; }
+"&"     { tokenTable.push_back({yytext,"OPERATOR"}); return AMPERSAND; }
 "|"     { tokenTable.push_back({yytext,"OPERATOR"}); return BIT_OR; }
 "^"     { tokenTable.push_back({yytext,"OPERATOR"}); return BIT_XOR; }
 "~"     { tokenTable.push_back({yytext,"OPERATOR"}); return BIT_NOT; }
 "++"    { tokenTable.push_back({yytext,"OPERATOR"}); return INC; }
 "--"    { tokenTable.push_back({yytext,"OPERATOR"}); return DEC; }
-"="     { tokenTable.push_back({yytext,"OPERATOR"}); return ASSIGN; }
-
 "+"     { tokenTable.push_back({yytext,"OPERATOR"}); return PLUS; }
 "-"     { tokenTable.push_back({yytext,"OPERATOR"}); return MINUS; }
-"*"     { tokenTable.push_back({yytext,"OPERATOR"}); return MUL; }
+"*"     { tokenTable.push_back({yytext,"OPERATOR"}); return ASTERISK; }
 "/"     { tokenTable.push_back({yytext,"OPERATOR"}); return DIV; }
 "%"     { tokenTable.push_back({yytext,"OPERATOR"}); return MOD; }
+"="     { tokenTable.push_back({yytext,"OPERATOR"}); return ASSIGN; }
 
 "("     { tokenTable.push_back({yytext,"SYMBOL"}); return LPAREN; }
 ")"     { tokenTable.push_back({yytext,"SYMBOL"}); return RPAREN; }
@@ -171,14 +92,11 @@ std::vector<std::pair<std::string, std::string>> tokenTable;
 ":"     { tokenTable.push_back({yytext,"SYMBOL"}); return COLON; }
 ";"     { tokenTable.push_back({yytext,"SYMBOL"}); return SEMICOLON; }
 ","     { tokenTable.push_back({yytext,"SYMBOL"}); return COMMA; }
+"#"     { tokenTable.push_back({yytext,"SYMBOL"}); return HASH; }
 
-"//".*                 { }
-
-@@ -99,14 +117,14 @@ extern YYSTYPE yylval;
 \"                     { BEGIN(STRING); yymore(); }
 <STRING>[^"\n\\]+      { yymore(); }
 <STRING>\\.            { yymore(); }
-<STRING>\"             { yylval.str = strdup(yytext); BEGIN(INITIAL); return STRING_LITERAL; }
 <STRING>\"             { yylval.str = strdup(yytext); tokenTable.push_back({yytext,"STRING_LITERAL"}); BEGIN(INITIAL); return STRING_LITERAL; }
 <STRING>\n             { std::cerr << "Unterminated string literal at line " << line << std::endl; BEGIN(INITIAL); return ERROR; }
 <STRING><<EOF>>        { std::cerr << "Unterminated string literal at line " << line << std::endl; BEGIN(INITIAL); return ERROR; }
@@ -186,7 +104,10 @@ std::vector<std::pair<std::string, std::string>> tokenTable;
 \'                     { BEGIN(CHAR); yymore(); }
 <CHAR>[^\\\n']         { yymore(); }
 <CHAR>\\.              { yymore(); }
-<CHAR>\'               { yylval.str = strdup(yytext); BEGIN(INITIAL); return CHAR_LITERAL; }
 <CHAR>\'               { yylval.str = strdup(yytext); tokenTable.push_back({yytext,"CHAR_LITERAL"}); BEGIN(INITIAL); return CHAR_LITERAL; }
 <CHAR>\n               { std::cerr << "Unterminated char literal at line " << line << std::endl; BEGIN(INITIAL); return ERROR; }
 <CHAR><<EOF>>          { std::cerr << "Unterminated char literal at line " << line << std::endl; BEGIN(INITIAL); return ERROR; }
+
+.                      {  }
+
+%%
