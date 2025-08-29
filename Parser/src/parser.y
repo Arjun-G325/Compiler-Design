@@ -13,7 +13,7 @@ using namespace std;
 
 struct Symbol {
     string name;
-    string type;
+string type;
     string kind;
     string scope;
 };
@@ -99,7 +99,7 @@ error_count++;
 %token HASH AMPERSAND ASTERISK
 %token ERROR
 
-%type <ival> expression postfix_expression primary_expression
+%type <ival> expression postfix_expression unary_expression primary_expression
 %type <str> parameter_list_opt argument_list_opt parameter_list argument_list declarator init_declarator init_declarator_list
 %type <ival> statement
 
@@ -114,11 +114,10 @@ error_count++;
 %left SHL SHR
 %left PLUS MINUS
 %left MUL DIV MOD
-%right NOT BIT_NOT UMINUS UPLUS
+%right NOT BIT_NOT
+%left DOT ARROW LBRACKET LPAREN
 %right INC DEC
-%nonassoc LBRACKET
-%left DOT ARROW
-%nonassoc LPAREN
+%right UMINUS UPLUS AMPERSAND ASTERISK
 
 %start program
 
@@ -305,7 +304,7 @@ goto_statement
     : GOTO IDENTIFIER SEMICOLON
     ;
 expression
-    : postfix_expression ASSIGN expression { $$=$3; }
+    : expression ASSIGN expression { $$=$1; }
     | expression OR expression { $$=$1||$3;
 }
     | expression AND expression { $$=$1&&$3; }
@@ -326,18 +325,19 @@ expression
     | expression DIV expression { $$=$1/$3; }
     | expression MOD expression { $$=fmod($1,$3);
 }
-    | NOT expression { $$=!$2; }
-    | BIT_NOT expression { $$=~$2;
-}
-    | MINUS expression %prec UMINUS { $$=-$2; }
-    | PLUS expression %prec UPLUS { $$=$2; }
-    | INC expression { $$=++$2; }
-    | DEC expression { $$=--$2; }
-    | ASTERISK expression %prec UMINUS { $$=0; }
-    | AMPERSAND expression %prec UMINUS { $$=0; }
-    | SIZEOF LPAREN expression RPAREN { $$=sizeof(int);
-}
-    | postfix_expression
+    | unary_expression
+    ;
+unary_expression
+    : postfix_expression { $$=$1; }
+    | PLUS unary_expression %prec UPLUS { $$=$2; }
+    | MINUS unary_expression %prec UMINUS { $$=-$2; }
+    | INC unary_expression { $$=++$2; }
+    | DEC unary_expression { $$=--$2; }
+    | ASTERISK unary_expression { $$=0; }
+    | AMPERSAND unary_expression { $$=0; }
+    | NOT unary_expression { $$=!$2; }
+    | BIT_NOT unary_expression { $$=~$2; }
+    | SIZEOF LPAREN expression RPAREN { $$=sizeof(int); }
     ;
 postfix_expression
     : primary_expression { $$=$1;
@@ -347,6 +347,8 @@ postfix_expression
     | postfix_expression DOT IDENTIFIER { $$=0;
 }
     | postfix_expression ARROW IDENTIFIER { $$=0; }
+    | postfix_expression INC { $$=$1++; }
+    | postfix_expression DEC { $$=$1--; }
     ;
 primary_expression
     : IDENTIFIER { $$=0; }
@@ -365,7 +367,7 @@ primary_expression
     ;
 argument_list_opt
     : argument_list { $$=$1; }
-    |  { $$=NULL; }
+    | /* empty */ { $$=NULL; }
     ;
 argument_list
     : expression { $$=NULL;
@@ -392,4 +394,4 @@ if(error_count==0) {
              <<endl;
 }
     return 0;
-}s
+}
