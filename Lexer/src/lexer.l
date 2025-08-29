@@ -53,8 +53,11 @@ std::vector<std::pair<std::string, std::string>> tokenTable;
 [0-9]+\\.[0-9]*([eE][-+]?[0-9]+)?   { yylval.str = strdup(yytext); return FLOAT_LITERAL; }
 [0-9]+[eE][-+]?[0-9]+               { yylval.str = strdup(yytext); return FLOAT_LITERAL; }
 
+"->"    { return ARROW; }
 "=="    { return EQ; }
 "!="    { return NEQ; }
+"<<"    { return SHL; }
+">>"    { return SHR; }
 "<="    { return LEQ; }
 ">="    { return GEQ; }
 "<"     { return LT; }
