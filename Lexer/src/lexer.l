@@ -5,10 +5,11 @@
 #include <vector>
 #include "../../Parser/src/y.tab.h"
 
-int line = 1;
+int line=1;
 extern YYSTYPE yylval;
 
-std::vector<std::pair<std::string, std::string>> tokenTable;
+using namespace std;
+vector<pair<string,string>> tokenTable;
 %}
 
 %option noyywrap
@@ -51,12 +52,12 @@ std::vector<std::pair<std::string, std::string>> tokenTable;
 "double"        { tokenTable.push_back({yytext,"TYPE"}); return T_DOUBLE; }
 "unsigned int"  { tokenTable.push_back({yytext,"TYPE"}); return T_UNSIGNED_INT; }
 
-[a-zA-Z_][a-zA-Z0-9_]* { yylval.str = strdup(yytext); tokenTable.push_back({yytext,"IDENTIFIER"}); return IDENTIFIER; }
+[a-zA-Z_][a-zA-Z0-9_]* { yylval.str=strdup(yytext); tokenTable.push_back({yytext,"IDENTIFIER"}); return IDENTIFIER; }
 
-[0-9]+                   { yylval.ival = atoi(yytext); tokenTable.push_back({yytext,"INT_LITERAL"}); return INT_LITERAL; }
-([0-9]+)?\.[0-9]+([eE][-+]?[0-9]+)? { yylval.fval = atof(yytext); tokenTable.push_back({yytext,"FLOAT_LITERAL"}); return FLOAT_LITERAL; }
-[0-9]+\.[0-9]*([eE][-+]?[0-9]+)?   { yylval.fval = atof(yytext); tokenTable.push_back({yytext,"FLOAT_LITERAL"}); return FLOAT_LITERAL; }
-[0-9]+[eE][-+]?[0-9]+               { yylval.fval = atof(yytext); tokenTable.push_back({yytext,"FLOAT_LITERAL"}); return FLOAT_LITERAL; }
+[0-9]+                   { yylval.ival=atoi(yytext); tokenTable.push_back({yytext,"INT_LITERAL"}); return INT_LITERAL; }
+([0-9]+)?\.[0-9]+([eE][-+]?[0-9]+)? { yylval.fval=atof(yytext); tokenTable.push_back({yytext,"FLOAT_LITERAL"}); return FLOAT_LITERAL; }
+[0-9]+\.[0-9]*([eE][-+]?[0-9]+)?   { yylval.fval=atof(yytext); tokenTable.push_back({yytext,"FLOAT_LITERAL"}); return FLOAT_LITERAL; }
+[0-9]+[eE][-+]?[0-9]+               { yylval.fval=atof(yytext); tokenTable.push_back({yytext,"FLOAT_LITERAL"}); return FLOAT_LITERAL; }
 
 "->"    { return ARROW; }
 "=="    { tokenTable.push_back({yytext,"OPERATOR"}); return EQ; }
@@ -97,17 +98,17 @@ std::vector<std::pair<std::string, std::string>> tokenTable;
 \"                     { BEGIN(STRING); yymore(); }
 <STRING>[^"\n\\]+      { yymore(); }
 <STRING>\\.            { yymore(); }
-<STRING>\"             { yylval.str = strdup(yytext); tokenTable.push_back({yytext,"STRING_LITERAL"}); BEGIN(INITIAL); return STRING_LITERAL; }
-<STRING>\n             { std::cerr << "Unterminated string literal at line " << line << std::endl; BEGIN(INITIAL); return ERROR; }
-<STRING><<EOF>>        { std::cerr << "Unterminated string literal at line " << line << std::endl; BEGIN(INITIAL); return ERROR; }
+<STRING>\"             { yylval.str=strdup(yytext); tokenTable.push_back({yytext,"STRING_LITERAL"}); BEGIN(INITIAL); return STRING_LITERAL; }
+<STRING>\n             { cerr<<"Unterminated string literal at line "<<line<<endl; BEGIN(INITIAL); return ERROR; }
+<STRING><<EOF>>        { cerr<<"Unterminated string literal at line "<<line<<endl; BEGIN(INITIAL); return ERROR; }
 
 \'                     { BEGIN(CHAR); yymore(); }
 <CHAR>[^\\\n']         { yymore(); }
 <CHAR>\\.              { yymore(); }
-<CHAR>\'               { yylval.str = strdup(yytext); tokenTable.push_back({yytext,"CHAR_LITERAL"}); BEGIN(INITIAL); return CHAR_LITERAL; }
-<CHAR>\n               { std::cerr << "Unterminated char literal at line " << line << std::endl; BEGIN(INITIAL); return ERROR; }
-<CHAR><<EOF>>          { std::cerr << "Unterminated char literal at line " << line << std::endl; BEGIN(INITIAL); return ERROR; }
+<CHAR>\'               { yylval.str=strdup(yytext); tokenTable.push_back({yytext,"CHAR_LITERAL"}); BEGIN(INITIAL); return CHAR_LITERAL; }
+<CHAR>\n               { cerr<<"Unterminated char literal at line "<<line<<endl; BEGIN(INITIAL); return ERROR; }
+<CHAR><<EOF>>          { cerr<<"Unterminated char literal at line "<<line<<endl; BEGIN(INITIAL); return ERROR; }
 
-.                      {  }
+.                      { }
 
 %%
