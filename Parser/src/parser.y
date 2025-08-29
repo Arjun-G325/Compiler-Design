@@ -40,7 +40,6 @@ void yyerror(const char *s) {
 %token <str> IDENTIFIER
 %token <str> STRING_LITERAL
 %token <str> CHAR_LITERAL
-%token ARROW
 %token ASSIGN PLUS MINUS MUL DIV MOD
 %token EQ NEQ LT GT LEQ GEQ
 %token AND OR NOT
