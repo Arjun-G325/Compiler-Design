@@ -5,12 +5,15 @@
 #include <vector>
 #include <iostream>
 #include <cstring>
+#include <cmath>
+
 using namespace std;
 
 struct Token {
     string lexeme;
     string type;
 };
+
 extern int yylex();
 extern int yylineno;
 extern char* yytext;
@@ -20,7 +23,7 @@ extern vector<pair<string, string>> tokenTable;
 int error_count = 0;
 
 void yyerror(const char *s) {
-    cerr << "Syntax Error at line " << yylineno << ": " 
+    cerr << "Syntax Error at line " << yylineno << ": "
          << s << " near '" << yytext << "'" << endl;
     error_count++;
 }
@@ -47,10 +50,14 @@ void yyerror(const char *s) {
 %token INC DEC
 %token QUESTION COLON
 %token LPAREN RPAREN LBRACE RBRACE LBRACKET RBRACKET SEMICOLON COMMA DOT ARROW
-%token ERROR   /* renamed from ERROR to avoid conflict */
+%token HASH AMPERSAND ASTERISK
+%token ERROR
 
-%type <ival> expression assignment_expression
+%type <ival> expression postfix_expression primary_expression
+%type <str> parameter_list_opt argument_list_opt parameter_list argument_list
+%type <ival> statement
 
+%right ASSIGN
 %left OR
 %left AND
 %left BIT_OR
@@ -73,18 +80,53 @@ void yyerror(const char *s) {
 program
     : declaration_list
     ;
-
 declaration_list
     : declaration_list declaration
     | declaration
     ;
-
 declaration
-    : type_specifier IDENTIFIER SEMICOLON
-    | type_specifier IDENTIFIER ASSIGN expression SEMICOLON
+    : type_specifier declaration_specifier SEMICOLON
     | function_definition
+    | class_definition
+    | struct_declaration
+    | union_declaration
+    | enum_declaration
+    ;
+declaration_specifier
+    : IDENTIFIER
+    | ASTERISK IDENTIFIER
+    | declaration_specifier ASTERISK
+    | IDENTIFIER LBRACKET expression RBRACKET
+    | declaration_specifier LBRACKET expression RBRACKET
     ;
 
+class_definition
+    : CLASS IDENTIFIER LBRACE member_list RBRACE SEMICOLON
+    | CLASS IDENTIFIER COLON IDENTIFIER LBRACE member_list RBRACE SEMICOLON
+    ;
+struct_declaration
+    : STRUCT IDENTIFIER LBRACE member_list RBRACE SEMICOLON
+    ;
+union_declaration
+    : UNION IDENTIFIER LBRACE member_list RBRACE SEMICOLON
+    ;
+enum_declaration
+    : ENUM IDENTIFIER LBRACE enum_list RBRACE SEMICOLON
+    ;
+enum_list
+    : enum_list COMMA IDENTIFIER
+    | IDENTIFIER
+    ;
+member_list
+    : member_list member
+    | member
+    ;
+member
+    : PUBLIC COLON
+    | PRIVATE COLON
+    | PROTECTED COLON
+    | declaration
+    ;
 type_specifier
     : T_INT
     | T_FLOAT
@@ -92,139 +134,127 @@ type_specifier
     | T_DOUBLE
     | T_VOID
     | T_UNSIGNED_INT
+    | IDENTIFIER 
+    | IDENTIFIER ASTERISK 
     ;
-
 function_definition
     : type_specifier IDENTIFIER LPAREN parameter_list_opt RPAREN compound_statement
+    | type_specifier ASTERISK IDENTIFIER LPAREN parameter_list_opt RPAREN compound_statement 
     ;
-
 parameter_list_opt
-    : parameter_list
-    | /* empty */
+    : parameter_list { $$ = $1; }
+    | /* empty */ { $$ = NULL; }
     ;
-
 parameter_list
-    : parameter_list COMMA parameter
-    | parameter
+    : parameter { $$ = NULL; }
+    | parameter_list COMMA parameter { $$ = NULL; }
+    | parameter_list COMMA DOT DOT DOT { $$ = NULL; } 
     ;
-
 parameter
     : type_specifier IDENTIFIER
+    | type_specifier ASTERISK IDENTIFIER
+    | type_specifier IDENTIFIER LBRACKET RBRACKET
     ;
 
 compound_statement
     : LBRACE statement_list_opt RBRACE
     ;
-
 statement_list_opt
     : statement_list
     | /* empty */
     ;
-
 statement_list
     : statement_list statement
     | statement
     ;
-
 statement
-    : expression_statement
-    | compound_statement
-    | selection_statement
-    | iteration_statement
-    | jump_statement
+    : expression_statement { $$ = 0; }
+    | compound_statement { $$ = 0; }
+    | selection_statement { $$ = 0; }
+    | iteration_statement { $$ = 0; }
+    | jump_statement { $$ = 0; }
+    | goto_statement { $$ = 0; }
     ;
-
 expression_statement
     : expression_opt SEMICOLON
+    | labeled_statement
     ;
-
 expression_opt
     : expression
     | /* empty */
     ;
-
+labeled_statement
+    : IDENTIFIER COLON statement
+    ;
 selection_statement
     : IF LPAREN expression RPAREN statement
     | IF LPAREN expression RPAREN statement ELSE statement
     ;
-
 iteration_statement
     : WHILE LPAREN expression RPAREN statement
     | FOR LPAREN expression_opt SEMICOLON expression_opt SEMICOLON expression_opt RPAREN statement
     | DO statement WHILE LPAREN expression RPAREN SEMICOLON
     ;
-
 jump_statement
     : RETURN expression_opt SEMICOLON
     | BREAK SEMICOLON
     | CONTINUE SEMICOLON
     ;
 
+goto_statement
+    : GOTO IDENTIFIER SEMICOLON
+    ;
+
 expression
-    : assignment_expression
+    : postfix_expression ASSIGN expression { $$ = $3; }
+    | expression OR expression { $$ = $1 || $3; }
+    | expression AND expression { $$ = $1 && $3; }
+    | expression EQ expression { $$ = $1 == $3; }
+    | expression NEQ expression { $$ = $1 != $3; }
+    | expression LT expression { $$ = $1 < $3; }
+    | expression GT expression { $$ = $1 > $3; }
+    | expression LEQ expression { $$ = $1 <= $3; }
+    | expression GEQ expression { $$ = $1 >= $3; }
+    | expression PLUS expression { $$ = $1 + $3; }
+    | expression MINUS expression { $$ = $1 - $3; }
+    | expression MUL expression { $$ = $1 * $3; }
+    | expression DIV expression { $$ = $1 / $3; }
+    | expression MOD expression { $$ = fmod($1, $3); }
+    | NOT expression { $$ = !$2; }
+    | BIT_NOT expression { $$ = ~$2; }
+    | MINUS expression %prec UMINUS { $$ = -$2; }
+    | PLUS expression %prec UPLUS { $$ = $2; }
+    | INC expression { $$ = ++$2; }
+    | DEC expression { $$ = --$2; }
+    | ASTERISK expression %prec UMINUS { $$ = 0; }
+    | AMPERSAND expression %prec UMINUS { $$ = 0; }
+    | SIZEOF LPAREN expression RPAREN { $$ = sizeof(int); }
+    | postfix_expression
     ;
 
-assignment_expression
-    : logical_or_expression
-    | IDENTIFIER ASSIGN assignment_expression
+postfix_expression
+    : primary_expression { $$ = $1; }
+    | postfix_expression LBRACKET expression RBRACKET { $$ = 0; }
+    | postfix_expression LPAREN argument_list_opt RPAREN { $$ = 0; }
+    | postfix_expression DOT IDENTIFIER { $$ = 0; }
+    | postfix_expression ARROW IDENTIFIER { $$ = 0; }
     ;
-
-logical_or_expression
-    : logical_or_expression OR logical_and_expression
-    | logical_and_expression
-    ;
-
-logical_and_expression
-    : logical_and_expression AND equality_expression
-    | equality_expression
-    ;
-
-equality_expression
-    : equality_expression EQ relational_expression
-    | equality_expression NEQ relational_expression
-    | relational_expression
-    ;
-
-relational_expression
-    : relational_expression LT additive_expression
-    | relational_expression GT additive_expression
-    | relational_expression LEQ additive_expression
-    | relational_expression GEQ additive_expression
-    | additive_expression
-    ;
-
-additive_expression
-    : additive_expression PLUS multiplicative_expression
-    | additive_expression MINUS multiplicative_expression
-    | multiplicative_expression
-    ;
-
-multiplicative_expression
-    : multiplicative_expression MUL unary_expression
-    | multiplicative_expression DIV unary_expression
-    | multiplicative_expression MOD unary_expression
-    | unary_expression
-    ;
-
-unary_expression
-    : primary_expression
-    | MINUS unary_expression %prec UMINUS
-    | PLUS unary_expression %prec UPLUS
-    | NOT unary_expression
-    | BIT_NOT unary_expression
-    | INC unary_expression
-    | DEC unary_expression
-    ;
-
 primary_expression
-    : IDENTIFIER
-    | INT_LITERAL
-    | FLOAT_LITERAL
-    | CHAR_LITERAL
-    | STRING_LITERAL
-    | LPAREN expression RPAREN
+    : IDENTIFIER { $$ = 0; }
+    | INT_LITERAL { $$ = $1; }
+    | FLOAT_LITERAL { $$ = static_cast<int>($1); }
+    | CHAR_LITERAL { $$ = static_cast<int>(*$1); }
+    | STRING_LITERAL { $$ = 0; }
+    | LPAREN expression RPAREN { $$ = $2; }
     ;
-
+argument_list_opt
+    : argument_list { $$ = $1; }
+    | { $$ = NULL; }
+    ;
+argument_list
+    : expression { $$ = NULL; }
+    | argument_list COMMA expression { $$ = NULL; }
+    ;
 %%
 
 int main(int argc, char** argv) {
@@ -239,6 +269,7 @@ int main(int argc, char** argv) {
     if (error_count == 0)
         cout << "Parsing completed successfully!" << endl;
     else
-        cout << "Parsing finished with " << error_count << " errors." << endl;
+        cout << "Parsing finished with " << error_count << " errors."
+             << endl;
     return 0;
 }
