@@ -5,7 +5,7 @@
 #include <vector>
 #include <iostream>
 #include <cstring>
-#include <cmath>
+#include <cmath>a
 #include <map>
 #include <stack>
 
@@ -294,6 +294,7 @@ iteration_statement
     : WHILE LPAREN expression RPAREN statement
     | FOR LPAREN expression_opt SEMICOLON expression_opt SEMICOLON expression_opt RPAREN statement
     | DO statement WHILE LPAREN expression RPAREN SEMICOLON
+    | FOR LPAREN declaration_specifiers declarator COLON expression RPAREN statement
     ;
 jump_statement
     : RETURN expression_opt SEMICOLON
@@ -364,7 +365,7 @@ primary_expression
     ;
 argument_list_opt
     : argument_list { $$=$1; }
-    | /* empty */ { $$=NULL; }
+    |  { $$=NULL; }
     ;
 argument_list
     : expression { $$=NULL;
@@ -391,4 +392,4 @@ if(error_count==0) {
              <<endl;
 }
     return 0;
-}
+}s
