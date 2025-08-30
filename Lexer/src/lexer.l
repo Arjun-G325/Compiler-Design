@@ -11,7 +11,7 @@ extern YYSTYPE yylval;
 using namespace std;
 %}
 
-%option noyywrap
+%option noyywrap yylineno 
 %x STRING CHAR
 
 %%
@@ -116,15 +116,15 @@ using namespace std;
 <STRING>\\. { yymore();
 }
 <STRING>\" { yylval.str=strdup(yytext); BEGIN(INITIAL); return STRING_LITERAL; }
-<STRING>\n { cerr<<"Unterminated string literal at line "<<line<<endl; BEGIN(INITIAL); return ERROR; }
-<STRING><<EOF>> { cerr<<"Unterminated string literal at line "<<line<<endl; BEGIN(INITIAL); return ERROR; }
+<STRING>\n { cerr<<"Unterminated string literal at line "<<yylineno<<endl; BEGIN(INITIAL); return ERROR; }
+<STRING><<EOF>> { cerr<<"Unterminated string literal at line "<<yylineno<<endl; BEGIN(INITIAL); return ERROR; }
 
 \' { BEGIN(CHAR); yymore(); }
 <CHAR>[^\\\n'] { yymore(); }
 <CHAR>\\. { yymore(); }
 <CHAR>\' { yylval.str=strdup(yytext); BEGIN(INITIAL); return CHAR_LITERAL; }
-<CHAR>\n { cerr<<"Unterminated char literal at line "<<line<<endl; BEGIN(INITIAL); return ERROR; }
-<CHAR><<EOF>> { cerr<<"Unterminated char literal at line "<<line<<endl; BEGIN(INITIAL); return ERROR; }
+<CHAR>\n { cerr<<"Unterminated char literal at line "<<yylineno<<endl; BEGIN(INITIAL); return ERROR; }
+<CHAR><<EOF>> { cerr<<"Unterminated char literal at line "<<yylineno<<endl; BEGIN(INITIAL); return ERROR; }
 
 . {}
 
