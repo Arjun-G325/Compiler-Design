@@ -29,6 +29,7 @@ string currentTypeQualifier="";
 string currentParentType="";
 int error_count=0;
 map<string, bool> is_type_name;
+int pointer_level=0;
 
 void pushScope(const string& scopeName) {
     scopeStack.push(scopeName);
@@ -98,10 +99,11 @@ void yyerror(const char *s) {
     int ival;
     double dval;
     char* str;
+    int array_dim;
 }
 
 %token CONST IF ELSE WHILE FOR RETURN BREAK CONTINUE GOTO SWITCH CASE DEFAULT DO SIZEOF
-%token STATIC EXTERN AUTO STRUCT UNION ENUM TYPEDEF CLASS PUBLIC PROTECTED PRIVATE LAMBDA
+%token STATIC EXTERN AUTO STRUCT UNION ENUM TYPEDEF CLASS PUBLIC PROTECTED PRIVATE
 %token T_INT T_CHAR T_FLOAT T_DOUBLE T_VOID T_UNSIGNED_INT
 %token <ival> INT_LITERAL
 %token <dval> FLOAT_LITERAL
@@ -125,6 +127,7 @@ void yyerror(const char *s) {
 %type <dval> unary_expression postfix_expression primary_expression assignment_expression
 %type <str> init_declarator declarator direct_declarator
 %type <str> type_specifier type_name
+%type <array_dim> array_declarator_list fixed_dimension_list
 
 %right ASSIGN
 %right QUESTION COLON
@@ -183,7 +186,8 @@ declaration_specifiers
     | type_qualifier declaration_specifiers
     ;
 storage_class_specifier
-    : STATIC { currentStorageClass="static"; }
+    : STATIC { currentStorageClass="static";
+    }
     | EXTERN { currentStorageClass="extern";
     }
     ;
@@ -201,38 +205,82 @@ function_definition
     ;
 init_declarator_list
     : init_declarator {
-        addSymbol(string($1), currentType, "variable");
+        string finalType = currentType;
+        if (pointer_level > 0) {
+            finalType += " pointer";
+        }
+        addSymbol(string($1), finalType, "variable");
         free($1);
+        pointer_level = 0;
     }
     | init_declarator_list COMMA init_declarator {
-        addSymbol(string($3), currentType, "variable");
+        string finalType = currentType;
+        if (pointer_level > 0) {
+            finalType += " pointer";
+        }
+        addSymbol(string($3), finalType, "variable");
         free($3);
+        pointer_level = 0;
     }
     ;
 
 init_declarator
     : declarator { $$=$1; }
     | declarator ASSIGN assignment_expression { $$=$1; }
-    | declarator ASSIGN LAMBDA LPAREN parameter_list_opt RPAREN compound_statement { $$=$1; }
+    | declarator ASSIGN initializer { $$=$1; }
+    | declarator ASSIGN LBRACKET RBRACKET LPAREN parameter_list_opt RPAREN compound_statement { $$=$1;
+    }
     ;
+initializer
+    : LBRACE initializer_list_opt RBRACE
+    ;
+initializer_list_opt
+    : initializer_list
+    | /* empty */
+    ;
+initializer_list
+    : assignment_expression
+    | initializer_list COMMA assignment_expression
+    ;
+
 declarator
     : direct_declarator { $$=$1; }
-    | ASTERISK declarator { $$=$2; }
+    | ASTERISK declarator { pointer_level++; $$=$2; }
     ;
 direct_declarator
-    : IDENTIFIER { $$=$1; }
+    : IDENTIFIER array_declarator_list {
+        if ($2 > 0) {
+            currentType += " " + to_string($2) + "D array";
+        }
+        $$=$1;
+    }
+    | IDENTIFIER { $$=$1; }
+    | LPAREN declarator RPAREN array_declarator_list {
+        if ($4 > 0) {
+            currentType += " " + to_string($4) + "D array";
+        }
+        $$=$2;
+    }
     | LPAREN declarator RPAREN { $$=$2; }
     | direct_declarator LPAREN parameter_list_opt RPAREN { $$=$1;
     }
-    | direct_declarator LBRACKET expression RBRACKET { $$=$1; }
-    | direct_declarator LBRACKET RBRACKET { $$=$1; }
+    ;
+array_declarator_list
+    : LBRACKET expression RBRACKET fixed_dimension_list { $$ = 1 + $4; }
+    | LBRACKET RBRACKET fixed_dimension_list { $$ = 1 + $3; }
+    | LBRACKET expression RBRACKET { $$ = 1; }
+    | LBRACKET RBRACKET { $$ = 1; }
+    ;
+fixed_dimension_list
+    : LBRACKET expression RBRACKET { $$ = 1; }
+    | fixed_dimension_list LBRACKET expression RBRACKET { $$ = $1 + 1; }
     ;
 class_definition
     : CLASS IDENTIFIER {
         addSymbol(string($2), "class", "class");
         currentParentType=string($2);
         pushScope(string($2));
-        free($2);
+free($2);
     } class_base_opt LBRACE member_list RBRACE SEMICOLON {
         currentParentType="";
         popScope();
@@ -243,10 +291,10 @@ class_base_opt
     : COLON class_base
     |
     ;
-
 class_base
     : IDENTIFIER { free($1); }
-    | class_base COMMA IDENTIFIER { free($3); }
+    | class_base COMMA IDENTIFIER { free($3);
+    }
     ;
 struct_declaration
     : STRUCT IDENTIFIER {
@@ -335,7 +383,8 @@ type_specifier
     | T_DOUBLE { $$=strdup("double");
     }
     | T_VOID { $$=strdup("void"); }
-    | T_UNSIGNED_INT { $$=strdup("unsigned int"); }
+    | T_UNSIGNED_INT { $$=strdup("unsigned int");
+    }
     | AUTO { $$=strdup("auto");
     }
     | STRUCT IDENTIFIER {
@@ -440,41 +489,49 @@ expression
     | expression COMMA assignment_expression { $$=$3; }
     ;
 assignment_expression
-    : conditional_expression { $$=$1; }
+    : conditional_expression { $$=$1;
+    }
     | unary_expression ASSIGN assignment_expression { $$=$3; }
     ;
 conditional_expression
     : logical_or_expression { $$=$1; }
-    | logical_or_expression QUESTION expression COLON conditional_expression { $$=$1?$3:$5; }
+    | logical_or_expression QUESTION expression COLON conditional_expression { $$=$1?$3:$5;
+    }
     ;
 logical_or_expression
     : logical_and_expression { $$=$1; }
     | logical_or_expression OR logical_and_expression { $$=$1||$3; }
     ;
 logical_and_expression
-    : equality_expression { $$=$1; }
+    : equality_expression { $$=$1;
+    }
     | logical_and_expression AND equality_expression { $$=$1&&$3; }
     ;
 equality_expression
     : relational_expression { $$=$1; }
-    | equality_expression EQ relational_expression { $$=$1==$3; }
+    | equality_expression EQ relational_expression { $$=$1==$3;
+    }
     | equality_expression NEQ relational_expression { $$=$1!=$3; }
     ;
 relational_expression
     : additive_expression { $$=$1; }
-    | relational_expression LT additive_expression { $$=$1<$3; }
+    | relational_expression LT additive_expression { $$=$1<$3;
+    }
     | relational_expression GT additive_expression { $$=$1>$3; }
-    | relational_expression LEQ additive_expression { $$=$1<=$3; }
+    | relational_expression LEQ additive_expression { $$=$1<=$3;
+    }
     | relational_expression GEQ additive_expression { $$=$1>=$3; }
     ;
 additive_expression
     : multiplicative_expression { $$=$1; }
-    | additive_expression PLUS multiplicative_expression { $$=$1+$3; }
+    | additive_expression PLUS multiplicative_expression { $$=$1+$3;
+    }
     | additive_expression MINUS multiplicative_expression { $$=$1-$3; }
     ;
 multiplicative_expression
     : unary_expression { $$=$1; }
-    | multiplicative_expression ASTERISK unary_expression { $$=$1*$3; }
+    | multiplicative_expression ASTERISK unary_expression { $$=$1*$3;
+    }
     | multiplicative_expression DIV unary_expression {
         if($3==0) {
             yyerror("Division by zero");
@@ -505,19 +562,23 @@ unary_expression
     | NOT unary_expression { $$=!$2;
     }
     | BIT_NOT unary_expression { $$=~(long)$2; }
-    | SIZEOF LPAREN type_name RPAREN %prec TYPENAME { $$=sizeof(int); }
+    | SIZEOF LPAREN type_name RPAREN %prec TYPENAME { $$=sizeof(int);
+    }
     | SIZEOF LPAREN expression RPAREN { $$=sizeof(int); }
     | SIZEOF unary_expression %prec SIZEOF { $$=sizeof(int); }
     ;
 postfix_expression
-    : primary_expression { $$=$1; }
+    : primary_expression { $$=$1;
+    }
     | postfix_expression LBRACKET expression RBRACKET { $$=0; }
     | postfix_expression LPAREN argument_list_opt RPAREN { $$=0; }
     | postfix_expression DOT IDENTIFIER { free($3);
-        $$=0; }
+        $$=0;
+    }
     | postfix_expression ARROW IDENTIFIER { free($3); $$=0;
     }
-    | postfix_expression INC { $$=$1; }
+    | postfix_expression INC { $$=$1;
+    }
     | postfix_expression DEC { $$=$1; }
     ;
 primary_expression
@@ -529,10 +590,11 @@ primary_expression
     | FLOAT_LITERAL { $$=$1;
     }
     | CHAR_LITERAL { $$=static_cast<double>(*$1); free($1); }
-    | STRING_LITERAL { $$=0; free($1); }
+    | STRING_LITERAL { $$=0; free($1);
+    }
     | LPAREN expression RPAREN { $$=$2;
     }
-    | LAMBDA LPAREN parameter_list_opt RPAREN compound_statement {
+    | LBRACKET RBRACKET LPAREN parameter_list_opt RPAREN compound_statement {
         pushScope("lambda");
         popScope();
         $$=0;
