@@ -12,7 +12,6 @@
 #include <algorithm>
 
 using namespace std;
-
 struct Symbol {
     string name;
     string type;
@@ -32,7 +31,6 @@ string currentParentType="";
 int error_count=0;
 map<string, bool> is_type_name;
 int pointer_level=0;
-
 void pushScope(const string& scopeName) {
     scopeStack.push(scopeName);
 }
@@ -85,7 +83,7 @@ void printSymbolTable() {
     for(const auto& s:symbolTable) {
         cout<<" Name: "<<s.name<<" - Type: ";
         if(s.kind=="function") {
-            cout<<"function";
+            cout<<s.type;
         } else {
             if(!s.typeQualifier.empty()) {
                 cout<<s.typeQualifier<<" ";
@@ -142,8 +140,9 @@ void yyerror(const char *s) {
 %type <dval> expression conditional_expression logical_or_expression logical_and_expression
 %type <dval> equality_expression relational_expression additive_expression multiplicative_expression
 %type <dval> unary_expression postfix_expression primary_expression assignment_expression cast_expression
-%type <str> init_declarator declarator direct_declarator
-%type <str> type_specifier type_name
+%type <str> init_declarator declarator
+%type <str> direct_declarator
+%type <str> type_specifier type_name declaration_specifiers
 %type <array_dim> array_declarator_list fixed_dimension_list
 
 %right ASSIGN
@@ -161,7 +160,7 @@ void yyerror(const char *s) {
 %right NOT BIT_NOT UMINUS UPLUS UASTERISK UAMPERSAND SIZEOF
 %left DOT ARROW LBRACKET LPAREN INC DEC
 
-%nonassoc IFX
+%nonassoc IF_WITHOUT_ELSE
 %nonassoc ELSE
 %nonassoc TYPENAME
 
@@ -184,25 +183,43 @@ external_declaration
     | union_declaration
     | enum_declaration
     | typedef_declaration
+    | function_prototype_declaration
+    ;
+function_prototype_declaration
+    : declaration_specifiers declarator LPAREN parameter_list_opt_proto RPAREN SEMICOLON {
+        string funcName = string($2);
+        string funcType = string($1) + " function";
+        addSymbol(funcName, funcType, "function");
+        currentStorageClass="";
+        currentTypeQualifier="";
+        free($1);
+        free($2);
+    }
     ;
 declaration
     : declaration_specifiers init_declarator_list SEMICOLON {
         currentStorageClass="";
         currentTypeQualifier="";
+        free($1);
     }
     | declaration_specifiers SEMICOLON {
         currentStorageClass="";
         currentTypeQualifier="";
+        free($1);
     }
     ;
 
 declaration_specifiers
     : type_specifier {
         currentType=string($1);
-        free($1);
+        $$ = $1;
     }
-    | storage_class_specifier declaration_specifiers
-    | type_qualifier declaration_specifiers
+    | storage_class_specifier declaration_specifiers {
+        $$ = $2;
+    }
+    | type_qualifier declaration_specifiers {
+        $$ = $2;
+    }
     ;
 storage_class_specifier
     : STATIC {
@@ -219,10 +236,13 @@ type_qualifier
     ;
 function_definition
     : declaration_specifiers declarator {
-        addSymbol(string($2), currentType, "function");
-        pushScope(string($2));
+        string funcName = string($2);
+        string funcType = string($1) + " function";
+        addSymbol(funcName, funcType, "function");
+        pushScope(funcName);
         currentStorageClass="";
         currentTypeQualifier="";
+        free($1);
         free($2);
     } function_body {
         popScope();
@@ -502,6 +522,19 @@ parameter
         free($1);
     }
     ;
+parameter_list_opt_proto
+    : parameter_list_proto
+    | /* empty */
+    ;
+parameter_list_proto
+    : parameter_proto
+    | parameter_list_proto COMMA parameter_proto
+    ;
+parameter_proto
+    : type_specifier declarator { free($1); free($2);
+    }
+    | type_specifier { free($1); }
+    ;
 function_body
     : LBRACE statement_list_opt RBRACE
     ;
@@ -543,7 +576,7 @@ labeled_statement
     }
     ;
 selection_statement
-    : IF LPAREN expression RPAREN statement %prec IFX
+    : IF LPAREN expression RPAREN statement %prec IF_WITHOUT_ELSE
     | IF LPAREN expression RPAREN statement ELSE statement
     | SWITCH LPAREN expression RPAREN statement
     ;
