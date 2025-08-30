@@ -116,8 +116,7 @@ void yyerror(const char *s) {
 %type <ival> expression postfix_expression unary_expression primary_expression
 %type <str> parameter_list_opt argument_list_opt parameter_list argument_list init_declarator init_declarator_list parameter
 %type <str> declarator function_declarator direct_declarator qualified_id
-%type <ival>
-statement
+%type <ival> statement
 
 %right ASSIGN
 %right QUESTION COLON
@@ -135,6 +134,9 @@ statement
 %left DOT ARROW LBRACKET LPAREN
 %right INC DEC
 
+%nonassoc IFX
+%nonassoc ELSE
+
 %start program
 
 %%
@@ -150,8 +152,7 @@ declaration_or_definition
     : declaration
     | function_definition
     | class_definition
-    |
-struct_declaration
+    | struct_declaration
     | union_declaration
     | enum_declaration
     ;
@@ -161,8 +162,7 @@ declaration
 declaration_specifiers
     : type_specifier
     | storage_class_specifier declaration_specifiers
-    |
-type_qualifier declaration_specifiers
+    | type_qualifier declaration_specifiers
     | TYPEDEF declaration_specifiers
     ;
 
@@ -299,10 +299,10 @@ statement
     | iteration_statement { $$=0; }
     | jump_statement { $$=0; }
     | goto_statement { $$=0; }
+    | labeled_statement { $$=0; }
     ;
 expression_statement
     : expression_opt SEMICOLON
-    | labeled_statement
     ;
 expression_opt
     : expression
@@ -312,7 +312,7 @@ labeled_statement
     : IDENTIFIER COLON statement
     ;
 selection_statement
-    : IF LPAREN expression RPAREN statement
+    : IF LPAREN expression RPAREN statement %prec IFX
     | IF LPAREN expression RPAREN statement ELSE statement
     ;
 iteration_statement
