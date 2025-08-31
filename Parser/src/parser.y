@@ -543,9 +543,7 @@ parameter
         free($1);
     }
     ;
-function_body
-    : LBRACE statement_list_opt RBRACE
-    ;
+
 compound_statement
     : LBRACE{
         pushScope("block");
