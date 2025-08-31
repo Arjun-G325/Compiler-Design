@@ -24,12 +24,16 @@ struct Symbol{
 vector<Symbol> symbolTable;
 stack<string> scopeStack;
 string currentType="";
+string currentBaseType="";
 string currentStorageClass="";
 string currentTypeQualifier="";
 string currentParentType="";
 int error_count=0;
 map<string, bool> is_type_name;
 int pointer_level=0;
+vector<string> pointerQualifiers;
+bool is_function_pointer=false;
+
 void pushScope(const string& scopeName){
     scopeStack.push(scopeName);
 }
@@ -54,11 +58,26 @@ string currentScope(){
     reverse(scope_parts.begin(),scope_parts.end());
     for(size_t i=0;i<scope_parts.size();++i){
         full_scope+=scope_parts[i];
-if(i<scope_parts.size()-1){
+        if(i<scope_parts.size()-1){
             full_scope+="::";
-}
+        }
     }
     return full_scope;
+}
+
+string buildFinalType(){
+    string finalType=currentBaseType;
+    for(int i=0;i<pointer_level;i++){
+        if(i<pointerQualifiers.size()&&!pointerQualifiers[i].empty()){
+            finalType=pointerQualifiers[i]+" "+finalType+" pointer";
+        }else{
+            finalType=finalType+" pointer";
+        }
+    }
+    if(is_function_pointer){
+        finalType+=" function pointer";
+    }
+    return finalType;
 }
 
 void addSymbol(const string& name,const string& type,const string& kind){
@@ -103,7 +122,7 @@ extern char* yytext;
 extern FILE* yyin;
 
 extern vector<pair<string,string>> tokenTable;
-void yyerror(const char *s){
+void yyerror(const char* s){
     cerr<<"Syntax Error at line "<<yylineno<<": "<<s<<" near '"<<yytext<<"'"<<endl;
     error_count++;
 }
@@ -139,7 +158,8 @@ void yyerror(const char *s){
 %type <dval> expression conditional_expression logical_or_expression logical_and_expression
 %type <dval> equality_expression relational_expression additive_expression multiplicative_expression
 %type <dval> unary_expression assignment_expression cast_expression
-%type <str> init_declarator declarator
+%type <str> init_declarator
+%type <str> declarator
 %type <str> direct_declarator
 %type <str> type_specifier declaration_specifiers identifier type_name
 %type <dval> postfix_expression primary_expression
@@ -189,7 +209,7 @@ external_declaration
 
 function_definition
     : declaration_specifiers direct_declarator{
-        string funcName=string($2);
+        string funcName=$2;
         string funcType=string($1)+" function";
         addSymbol(funcName,funcType,"function");
         pushScope(funcName);
@@ -201,7 +221,7 @@ function_definition
         popScope();
     }
     | declaration_specifiers direct_declarator SEMICOLON{
-        string funcName=string($2);
+        string funcName=$2;
         string funcType=string($1)+" function";
         addSymbol(funcName,funcType,"function");
         currentStorageClass="";
@@ -214,25 +234,43 @@ declaration
     : declaration_specifiers init_declarator_list SEMICOLON{
         currentStorageClass="";
         currentTypeQualifier="";
+        pointer_level=0;
+        pointerQualifiers.clear();
+        is_function_pointer=false;
         free($1);
     }
     | declaration_specifiers SEMICOLON{
         currentStorageClass="";
         currentTypeQualifier="";
+        pointer_level=0;
+        pointerQualifiers.clear();
+        is_function_pointer=false;
         free($1);
     }
     ;
 
 declaration_specifiers
     : type_specifier{
-        currentType=string($1);
+        currentBaseType=string($1);
+        currentType=currentBaseType;
+        pointerQualifiers.clear();
+        is_function_pointer=false;
         $$=$1;
     }
     | storage_class_specifier declaration_specifiers{
-        $$=$2;
+        string finalType=string(currentStorageClass)+" "+string($2);
+        $$=strdup(finalType.c_str());
+        free($2);
     }
     | type_qualifier declaration_specifiers{
-        $$=$2;
+        if(pointer_level==0){
+            string finalType=string(currentTypeQualifier)+" "+string($2);
+            $$=strdup(finalType.c_str());
+        }else{
+            pointerQualifiers.push_back(currentTypeQualifier);
+            $$=$2;
+        }
+        free($2);
     }
     ;
 storage_class_specifier
@@ -248,24 +286,25 @@ type_qualifier
         currentTypeQualifier="const";
     }
     ;
+type_qualifier_opt
+    : type_qualifier
+    ;
 init_declarator_list
     : init_declarator{
-        string finalType=currentType;
-        if(pointer_level>0){
-            finalType+=" pointer";
-        }
+        string finalType=buildFinalType();
         addSymbol(string($1),finalType,"variable");
         free($1);
         pointer_level=0;
+        pointerQualifiers.clear();
+        is_function_pointer=false;
     }
     | init_declarator_list COMMA init_declarator{
-        string finalType=currentType;
-        if(pointer_level>0){
-            finalType+=" pointer";
-        }
+        string finalType=buildFinalType();
         addSymbol(string($3),finalType,"variable");
         free($3);
         pointer_level=0;
+        pointerQualifiers.clear();
+        is_function_pointer=false;
     }
     ;
 init_declarator
@@ -294,6 +333,14 @@ declarator
     : direct_declarator{
         $$=$1;
     }
+    | ASTERISK type_qualifier_opt declarator{
+        pointer_level++;
+        if(!currentTypeQualifier.empty()){
+            pointerQualifiers.push_back(currentTypeQualifier);
+            currentTypeQualifier="";
+        }
+        $$=$3;
+    }
     | ASTERISK declarator{
         pointer_level++;
         $$=$2;
@@ -301,9 +348,16 @@ declarator
     | LPAREN declarator RPAREN{
         $$=$2;
     }
+    | LPAREN ASTERISK type_qualifier_opt direct_declarator RPAREN LPAREN parameter_list_opt RPAREN{
+        is_function_pointer=true;
+        if(!currentTypeQualifier.empty()){
+            pointerQualifiers.push_back(currentTypeQualifier);
+            currentTypeQualifier="";
+        }
+        $$=$4;
+    }
     | LPAREN ASTERISK direct_declarator RPAREN LPAREN parameter_list_opt RPAREN{
-        currentType += " function pointer";
-        pointer_level = 0;
+        is_function_pointer=true;
         $$=$3;
     }
     ;
@@ -435,12 +489,14 @@ enum_list
 
 typedef_declaration
     : TYPEDEF type_specifier declarator SEMICOLON{
-        addSymbol(string($3),string($2),"type alias");
+        string new_type_name=string($3);
+        string base_type=string($2);
+        addSymbol(new_type_name,base_type,"type alias");
+        is_type_name[new_type_name]=true;
         free($2);
         free($3);
     }
     ;
-
 member_list
     : member_list member
     | member
@@ -526,12 +582,11 @@ parameter_list
     ;
 parameter
     : declaration_specifiers declarator{
-        // Use the final type from the declarator, not just the initial one.
-        string paramType=currentType;
+        string paramType=string($1);
         if(pointer_level>0){
             paramType+=" pointer";
         }
-        addSymbol(string($2),paramType,"variable");
+        addSymbol(string($2), paramType, "variable");
         free($1);
         free($2);
         pointer_level=0;
