@@ -1,15 +1,5 @@
 class Demo {
 public:
-   
-    Demo() {
-        cout << "Constructor called" << endl;
-    }
-
-   
-    ~Demo() {
-        cout << "Destructor called" << endl;
-    }
-
     void show();
 };
 
