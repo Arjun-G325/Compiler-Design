@@ -12,7 +12,7 @@
 #include <algorithm>
 
 using namespace std;
-struct Symbol {
+struct Symbol{
     string name;
     string type;
     string kind;
@@ -31,38 +31,38 @@ string currentParentType="";
 int error_count=0;
 map<string, bool> is_type_name;
 int pointer_level=0;
-void pushScope(const string& scopeName) {
+void pushScope(const string& scopeName){
     scopeStack.push(scopeName);
 }
 
-void popScope() {
-    if(!scopeStack.empty()) {
+void popScope(){
+    if(!scopeStack.empty()){
         scopeStack.pop();
     }
 }
 
-string currentScope() {
-    if(scopeStack.empty()) {
+string currentScope(){
+    if(scopeStack.empty()){
         return "global";
     }
-    string full_scope = "";
-    stack<string> temp_stack = scopeStack;
+    string full_scope="";
+    stack<string> temp_stack=scopeStack;
     vector<string> scope_parts;
-    while(!temp_stack.empty()) {
+    while(!temp_stack.empty()){
         scope_parts.push_back(temp_stack.top());
         temp_stack.pop();
     }
-    reverse(scope_parts.begin(), scope_parts.end());
-    for(size_t i=0; i<scope_parts.size(); ++i) {
+    reverse(scope_parts.begin(),scope_parts.end());
+    for(size_t i=0;i<scope_parts.size();++i){
         full_scope+=scope_parts[i];
-        if(i<scope_parts.size()-1) {
+        if(i<scope_parts.size()-1){
             full_scope+="::";
         }
     }
     return full_scope;
 }
 
-void addSymbol(const string& name, const string& type, const string& kind) {
+void addSymbol(const string& name,const string& type,const string& kind){
     Symbol s;
     s.name=name;
     s.type=type;
@@ -73,22 +73,22 @@ void addSymbol(const string& name, const string& type, const string& kind) {
     s.parentType=currentParentType;
     symbolTable.push_back(s);
 
-    if(kind=="type"||kind=="struct"||kind=="union"||kind=="class"||kind=="enum"||kind=="type alias") {
+    if(kind=="type"||kind=="struct"||kind=="union"||kind=="class"||kind=="enum"||kind=="type alias"){
         is_type_name[name]=true;
     }
 }
 
-void printSymbolTable() {
+void printSymbolTable(){
     cout<<"Symbol Table:"<<endl;
-    for(const auto& s:symbolTable) {
+    for(const auto& s:symbolTable){
         cout<<" Name: "<<s.name<<" - Type: ";
-        if(s.kind=="function") {
+        if(s.kind=="function"){
             cout<<s.type;
-        } else {
-            if(!s.typeQualifier.empty()) {
+        }else{
+            if(!s.typeQualifier.empty()){
                 cout<<s.typeQualifier<<" ";
             }
-            if(!s.storageClass.empty()) {
+            if(!s.storageClass.empty()){
                 cout<<s.storageClass<<" ";
             }
             cout<<s.type;
@@ -104,13 +104,13 @@ extern char* yytext;
 extern FILE* yyin;
 
 extern vector<pair<string,string>> tokenTable;
-void yyerror(const char *s) {
+void yyerror(const char *s){
     cerr<<"Syntax Error at line "<<yylineno<<": "<<s<<" near '"<<yytext<<"'"<<endl;
     error_count++;
 }
 %}
 
-%union {
+%union{
     int ival;
     double dval;
     char* str;
@@ -139,10 +139,12 @@ void yyerror(const char *s) {
 
 %type <dval> expression conditional_expression logical_or_expression logical_and_expression
 %type <dval> equality_expression relational_expression additive_expression multiplicative_expression
-%type <dval> unary_expression postfix_expression primary_expression assignment_expression cast_expression
+%type <dval> unary_expression assignment_expression cast_expression
 %type <str> init_declarator declarator
 %type <str> direct_declarator
-%type <str> type_specifier type_name declaration_specifiers
+%type <str> type_specifier declaration_specifiers identifier type_name
+%type <dval> postfix_expression primary_expression
+%type <str> labeled_statement goto_statement
 %type <array_dim> array_declarator_list fixed_dimension_list
 
 %right ASSIGN
@@ -176,33 +178,47 @@ external_declaration_list
     | external_declaration_list external_declaration
     ;
 external_declaration
-    : function_definition
-    | declaration
+    : declaration
+    | function_definition
+    | expression_statement
     | class_definition
     | struct_declaration
     | union_declaration
     | enum_declaration
     | typedef_declaration
-    | function_prototype_declaration
     ;
-function_prototype_declaration
-    : declaration_specifiers declarator LPAREN parameter_list_opt_proto RPAREN SEMICOLON {
-        string funcName = string($2);
-        string funcType = string($1) + " function";
-        addSymbol(funcName, funcType, "function");
+
+function_definition
+    : declaration_specifiers direct_declarator{
+        string funcName=string($2);
+        string funcType=string($1)+" function";
+        addSymbol(funcName,funcType,"function");
+        pushScope(funcName);
+        currentStorageClass="";
+        currentTypeQualifier="";
+        free($1);
+        free($2);
+    }compound_statement{
+        popScope();
+    }
+    | declaration_specifiers direct_declarator SEMICOLON{
+        string funcName=string($2);
+        string funcType=string($1)+" function";
+        addSymbol(funcName,funcType,"function");
         currentStorageClass="";
         currentTypeQualifier="";
         free($1);
         free($2);
     }
     ;
+
 declaration
-    : declaration_specifiers init_declarator_list SEMICOLON {
+    : declaration_specifiers init_declarator_list SEMICOLON{
         currentStorageClass="";
         currentTypeQualifier="";
         free($1);
     }
-    | declaration_specifiers SEMICOLON {
+    | declaration_specifiers SEMICOLON{
         currentStorageClass="";
         currentTypeQualifier="";
         free($1);
@@ -210,78 +226,65 @@ declaration
     ;
 
 declaration_specifiers
-    : type_specifier {
+    : type_specifier{
         currentType=string($1);
-        $$ = $1;
+        $$=$1;
     }
-    | storage_class_specifier declaration_specifiers {
-        $$ = $2;
+    | storage_class_specifier declaration_specifiers{
+        $$=$2;
     }
-    | type_qualifier declaration_specifiers {
-        $$ = $2;
+    | type_qualifier declaration_specifiers{
+        $$=$2;
     }
     ;
+
 storage_class_specifier
-    : STATIC {
+    : STATIC{
         currentStorageClass="static";
     }
-    | EXTERN {
+    | EXTERN{
         currentStorageClass="extern";
     }
     ;
+
 type_qualifier
-    : CONST {
+    : CONST{
         currentTypeQualifier="const";
     }
     ;
-function_definition
-    : declaration_specifiers declarator {
-        string funcName = string($2);
-        string funcType = string($1) + " function";
-        addSymbol(funcName, funcType, "function");
-        pushScope(funcName);
-        currentStorageClass="";
-        currentTypeQualifier="";
-        free($1);
-        free($2);
-    } function_body {
-        popScope();
-    }
-    ;
+
 init_declarator_list
-    : init_declarator {
+    : init_declarator{
         string finalType=currentType;
-        if(pointer_level>0) {
+        if(pointer_level>0){
             finalType+=" pointer";
         }
-        addSymbol(string($1), finalType, "variable");
+        addSymbol(string($1),finalType,"variable");
         free($1);
         pointer_level=0;
     }
-    | init_declarator_list COMMA init_declarator {
+    | init_declarator_list COMMA init_declarator{
         string finalType=currentType;
-        if(pointer_level>0) {
+        if(pointer_level>0){
             finalType+=" pointer";
         }
-        addSymbol(string($3), finalType, "variable");
+        addSymbol(string($3),finalType,"variable");
         free($3);
         pointer_level=0;
     }
     ;
 init_declarator
-    : declarator {
+    : declarator{
         $$=$1;
     }
-    | declarator ASSIGN assignment_expression {
+    | declarator ASSIGN assignment_expression{
         $$=$1;
     }
-    | declarator ASSIGN initializer {
-        $$=$1;
-    }
-    | declarator ASSIGN LBRACKET RBRACKET LPAREN parameter_list_opt RPAREN compound_statement {
+    | declarator ASSIGN initializer{
         $$=$1;
     }
     ;
+
 initializer
     : LBRACE initializer_list_opt RBRACE
     ;
@@ -294,71 +297,74 @@ initializer_list
     | initializer_list COMMA assignment_expression
     ;
 declarator
-    : direct_declarator {
+    : direct_declarator{
         $$=$1;
     }
-    | ASTERISK declarator {
+    | ASTERISK declarator{
         pointer_level++;
         $$=$2;
     }
     ;
+
 direct_declarator
-    : IDENTIFIER array_declarator_list {
-        if($2>0) {
+    : identifier array_declarator_list{
+        if($2>0){
             currentType+=" "+to_string($2)+"D array";
         }
         $$=$1;
     }
-    | IDENTIFIER {
+    | identifier{
         $$=$1;
     }
-    | LPAREN declarator RPAREN array_declarator_list {
-        if($4>0) {
+    | LPAREN declarator RPAREN array_declarator_list{
+        if($4>0){
             currentType+=" "+to_string($4)+"D array";
         }
         $$=$2;
     }
-    | LPAREN declarator RPAREN {
+    | LPAREN declarator RPAREN{
         $$=$2;
     }
-    | direct_declarator LPAREN parameter_list_opt RPAREN {
+    | direct_declarator LPAREN parameter_list_opt RPAREN{
         $$=$1;
     }
     ;
 array_declarator_list
-    : LBRACKET expression RBRACKET fixed_dimension_list {
+    : LBRACKET expression RBRACKET fixed_dimension_list{
         $$=1+$4;
     }
-    | LBRACKET RBRACKET fixed_dimension_list {
+    | LBRACKET RBRACKET fixed_dimension_list{
         $$=1+$3;
     }
-    | LBRACKET expression RBRACKET {
+    | LBRACKET expression RBRACKET{
         $$=1;
     }
-    | LBRACKET RBRACKET {
+    | LBRACKET RBRACKET{
         $$=1;
     }
     ;
+
 fixed_dimension_list
-    : LBRACKET expression RBRACKET {
+    : LBRACKET expression RBRACKET{
         $$=1;
     }
-    | fixed_dimension_list LBRACKET expression RBRACKET {
+    | fixed_dimension_list LBRACKET expression RBRACKET{
         $$=$1+1;
     }
     ;
+
 class_definition
-    : CLASS IDENTIFIER {
-        addSymbol(string($2), "class", "class");
+    : CLASS IDENTIFIER{
+        addSymbol(string($2),"class","class");
         currentParentType=string($2);
         pushScope(string($2));
         free($2);
-    } class_base_opt LBRACE member_list RBRACE SEMICOLON {
+    }class_base_opt LBRACE member_list RBRACE SEMICOLON{
         currentParentType="";
         popScope();
     }
-    | CLASS IDENTIFIER SEMICOLON {
-        addSymbol(string($2), "class", "class");
+    | CLASS IDENTIFIER SEMICOLON{
+        addSymbol(string($2),"class","class");
         free($2);
     }
     ;
@@ -367,69 +373,72 @@ class_base_opt
     : COLON class_base
     | /* empty */
     ;
+
 class_base
-    : IDENTIFIER {
+    : IDENTIFIER{
         free($1);
     }
-    | class_base COMMA IDENTIFIER {
+    | class_base COMMA IDENTIFIER{
         free($3);
     }
     ;
+
 struct_declaration
-    : STRUCT IDENTIFIER {
-        addSymbol(string($2), "struct", "struct");
+    : STRUCT IDENTIFIER{
+        addSymbol(string($2),"struct","struct");
         currentParentType=string($2);
         pushScope(string($2));
         free($2);
-    } LBRACE member_list RBRACE SEMICOLON {
+    }LBRACE member_list RBRACE SEMICOLON{
         currentParentType="";
         popScope();
     }
-    | STRUCT IDENTIFIER SEMICOLON {
-        addSymbol(string($2), "struct", "struct");
+    | STRUCT IDENTIFIER SEMICOLON{
+        addSymbol(string($2),"struct","struct");
         free($2);
     }
     ;
 
 union_declaration
-    : UNION IDENTIFIER {
-        addSymbol(string($2), "union", "union");
+    : UNION IDENTIFIER{
+        addSymbol(string($2),"union","union");
         currentParentType=string($2);
         pushScope(string($2));
         free($2);
-    } LBRACE member_list RBRACE SEMICOLON {
+    }LBRACE member_list RBRACE SEMICOLON{
         currentParentType="";
         popScope();
     }
     ;
 
 enum_declaration
-    : ENUM IDENTIFIER {
-        addSymbol(string($2), "enum", "enum type");
+    : ENUM IDENTIFIER{
+        addSymbol(string($2),"enum","enum type");
         currentParentType=string($2);
         free($2);
-    } LBRACE enum_list RBRACE SEMICOLON {
+    }LBRACE enum_list RBRACE SEMICOLON{
         currentParentType="";
     }
-    | ENUM IDENTIFIER SEMICOLON {
-        addSymbol(string($2), "enum", "enum type");
+    | ENUM IDENTIFIER SEMICOLON{
+        addSymbol(string($2),"enum","enum type");
         free($2);
     }
     ;
 
 enum_list
-    : enum_list COMMA IDENTIFIER {
-        addSymbol(string($3), "enum", "enum constant");
+    : enum_list COMMA IDENTIFIER{
+        addSymbol(string($3),"enum","enum constant");
         free($3);
     }
-    | IDENTIFIER {
-        addSymbol(string($1), "enum", "enum constant");
+    | IDENTIFIER{
+        addSymbol(string($1),"enum","enum constant");
         free($1);
     }
     ;
+
 typedef_declaration
-    : TYPEDEF type_specifier declarator SEMICOLON {
-        addSymbol(string($3), string($2), "type alias");
+    : TYPEDEF type_specifier declarator SEMICOLON{
+        addSymbol(string($3),string($2),"type alias");
         free($2);
         free($3);
     }
@@ -449,99 +458,98 @@ access_specifier
     | PRIVATE
     | PROTECTED
     ;
+identifier
+    : IDENTIFIER{
+        $$=$1;
+    }
+    ;
+
 type_name
-    : IDENTIFIER %prec TYPENAME {
+    : IDENTIFIER %prec TYPENAME{
         string ident=string($1);
-        if(is_type_name.count(ident)==0) {
+        if(is_type_name.count(ident)==0){
             yyerror("Undeclared type name");
         }
-        $$=strdup(ident.c_str());
-        free($1);
+        $$=$1;
     }
     ;
 type_specifier
-    : T_INT {
+    : T_INT{
         $$=strdup("int");
     }
-    | T_FLOAT {
+    | T_FLOAT{
         $$=strdup("float");
     }
-    | T_CHAR {
+    | T_CHAR{
         $$=strdup("char");
     }
-    | T_DOUBLE {
+    | T_DOUBLE{
         $$=strdup("double");
     }
-    | T_VOID {
+    | T_VOID{
         $$=strdup("void");
     }
-    | T_UNSIGNED_INT {
+    | T_UNSIGNED_INT{
         $$=strdup("unsigned int");
     }
-    | AUTO {
+    | AUTO{
         $$=strdup("auto");
     }
-    | STRUCT IDENTIFIER {
+    | STRUCT IDENTIFIER{
         string typeName="struct "+string($2);
         is_type_name[typeName]=true;
         $$=strdup(typeName.c_str());
         free($2);
     }
-    | UNION IDENTIFIER {
+    | UNION IDENTIFIER{
         string typeName="union "+string($2);
         is_type_name[typeName]=true;
         $$=strdup(typeName.c_str());
         free($2);
     }
-    | ENUM IDENTIFIER {
+    | ENUM IDENTIFIER{
         string typeName="enum "+string($2);
         is_type_name[typeName]=true;
         $$=strdup(typeName.c_str());
         free($2);
     }
-    | type_name {
+    | type_name{
         $$=$1;
     }
     ;
 parameter_list_opt
     : parameter_list
+    | DOT_DOT_DOT
     | /* empty */
     ;
+
 parameter_list
     : parameter
-    | parameter_list COMMA parameter
+    | parameter COMMA parameter_list
+    | parameter COMMA DOT_DOT_DOT
     ;
 parameter
-    : type_specifier declarator {
+    : declaration_specifiers declarator{
         string paramType=string($1);
-        addSymbol(string($2), paramType, "variable");
+        if(pointer_level>0){
+            paramType+=" pointer";
+        }
+        addSymbol(string($2),paramType,"variable");
         free($1);
         free($2);
+        pointer_level=0;
     }
-    | type_specifier {
+    | declaration_specifiers{
         free($1);
     }
-    ;
-parameter_list_opt_proto
-    : parameter_list_proto
-    | /* empty */
-    ;
-parameter_list_proto
-    : parameter_proto
-    | parameter_list_proto COMMA parameter_proto
-    ;
-parameter_proto
-    : type_specifier declarator { free($1); free($2);
-    }
-    | type_specifier { free($1); }
     ;
 function_body
     : LBRACE statement_list_opt RBRACE
     ;
 compound_statement
-    : LBRACE {
+    : LBRACE{
         pushScope("block");
-    } statement_list_opt RBRACE {
+    }statement_list_opt RBRACE{
         popScope();
     }
     ;
@@ -563,6 +571,7 @@ statement
     | goto_statement
     | labeled_statement
     ;
+
 expression_statement
     : expression_opt SEMICOLON
     ;
@@ -571,10 +580,11 @@ expression_opt
     | /* empty */
     ;
 labeled_statement
-    : IDENTIFIER COLON statement {
+    : identifier COLON statement{
         free($1);
     }
     ;
+
 selection_statement
     : IF LPAREN expression RPAREN statement %prec IF_WITHOUT_ELSE
     | IF LPAREN expression RPAREN statement ELSE statement
@@ -582,11 +592,11 @@ selection_statement
     ;
 iteration_statement
     : WHILE LPAREN expression RPAREN statement
-    | FOR LPAREN {
+    | FOR LPAREN{
         pushScope("for_init");
-    } for_init_statement expression_opt SEMICOLON expression_opt RPAREN {
+    }for_init_statement expression_opt SEMICOLON expression_opt RPAREN{
         popScope();
-    } statement
+    }statement
     | DO statement WHILE LPAREN expression RPAREN SEMICOLON
     ;
 for_init_statement
@@ -600,210 +610,233 @@ jump_statement
     ;
 
 goto_statement
-    : GOTO IDENTIFIER SEMICOLON {
+    : GOTO identifier SEMICOLON{
         free($2);
     }
     ;
 
 expression
-    : assignment_expression {
+    : assignment_expression{
         $$=$1;
     }
-    | expression COMMA assignment_expression {
+    | expression COMMA assignment_expression{
         $$=$3;
     }
     ;
+
 assignment_expression
-    : conditional_expression {
+    : conditional_expression{
         $$=$1;
     }
-    | unary_expression ASSIGN assignment_expression {
+    | unary_expression ASSIGN assignment_expression{
         $$=$3;
     }
     ;
+
 conditional_expression
-    : logical_or_expression {
+    : logical_or_expression{
         $$=$1;
     }
-    | logical_or_expression QUESTION expression COLON conditional_expression {
+    | logical_or_expression QUESTION expression COLON conditional_expression{
         $$=$1?$3:$5;
     }
     ;
+
 logical_or_expression
-    : logical_and_expression {
+    : logical_and_expression{
         $$=$1;
     }
-    | logical_or_expression OR logical_and_expression {
-        $$=$1||$3;
-    }
-    ;
-logical_and_expression
-    : equality_expression {
-        $$=$1;
-    }
-    | logical_and_expression AND equality_expression {
+    | logical_or_expression OR logical_and_expression{
         $$=$1&&$3;
     }
     ;
-equality_expression
-    : relational_expression {
+
+logical_and_expression
+    : equality_expression{
         $$=$1;
     }
-    | equality_expression EQ relational_expression {
+    | logical_and_expression AND equality_expression{
+        $$=$1&&$3;
+    }
+    ;
+
+equality_expression
+    : relational_expression{
+        $$=$1;
+    }
+    | equality_expression EQ relational_expression{
         $$=$1==$3;
     }
-    | equality_expression NEQ relational_expression {
+    | equality_expression NEQ relational_expression{
         $$=$1!=$3;
     }
     ;
+
 relational_expression
-    : additive_expression {
+    : additive_expression{
         $$=$1;
     }
-    | relational_expression LT additive_expression {
+    | relational_expression LT additive_expression{
         $$=$1<$3;
     }
-    | relational_expression GT additive_expression {
+    | relational_expression GT additive_expression{
         $$=$1>$3;
     }
-    | relational_expression LEQ additive_expression {
+    | relational_expression LEQ additive_expression{
         $$=$1<=$3;
     }
-    | relational_expression GEQ additive_expression {
+    | relational_expression GEQ additive_expression{
         $$=$1>=$3;
     }
     ;
+
 additive_expression
-    : multiplicative_expression {
+    : multiplicative_expression{
         $$=$1;
     }
-    | additive_expression PLUS multiplicative_expression {
+    | additive_expression PLUS multiplicative_expression{
         $$=$1+$3;
     }
-    | additive_expression MINUS multiplicative_expression {
+    | additive_expression MINUS multiplicative_expression{
         $$=$1-$3;
     }
     ;
+
 multiplicative_expression
-    : cast_expression {
+    : cast_expression{
         $$=$1;
     }
-    | multiplicative_expression ASTERISK cast_expression {
+    | multiplicative_expression ASTERISK cast_expression{
         $$=$1*$3;
     }
-    | multiplicative_expression DIV cast_expression {
-        if($3==0) {
+    | multiplicative_expression DIV cast_expression{
+        if($3==0){
             yyerror("Division by zero");
             $$=0;
-        } else {
+        }else{
             $$=$1/$3;
         }
     }
-    | multiplicative_expression MOD cast_expression {
-        if($3==0) {
+    | multiplicative_expression MOD cast_expression{
+        if($3==0){
             yyerror("Modulo by zero");
             $$=0;
-        } else {
-            $$=fmod($1, $3);
+        }else{
+            $$=fmod($1,$3);
         }
     }
     ;
 
 cast_expression
-    : unary_expression {
+    : unary_expression{
         $$=$1;
     }
-    | LPAREN type_specifier RPAREN cast_expression {
+    | LPAREN type_name RPAREN cast_expression %prec TYPENAME{
+        free($2);
         $$=$4;
     }
     ;
 unary_expression
-    : postfix_expression {
+    : postfix_expression{
         $$=$1;
     }
-    | PLUS cast_expression %prec UPLUS {
+    | PLUS cast_expression %prec UPLUS{
         $$=$2;
     }
-    | MINUS cast_expression %prec UMINUS {
+    | MINUS cast_expression %prec UMINUS{
         $$=-$2;
     }
-    | INC unary_expression {
+    | INC unary_expression{
         $$=$2+1;
     }
-    | DEC unary_expression {
+    | DEC unary_expression{
         $$=$2-1;
     }
-    | ASTERISK cast_expression %prec UASTERISK {
+    | ASTERISK cast_expression %prec UASTERISK{
         $$=0;
     }
-    | AMPERSAND cast_expression %prec UAMPERSAND {
+    | AMPERSAND cast_expression %prec UAMPERSAND{
         $$=0;
     }
-    | NOT cast_expression {
+    | NOT cast_expression{
         $$=!$2;
     }
-    | BIT_NOT cast_expression {
+    | BIT_NOT cast_expression{
         $$=~(long)$2;
     }
-    | SIZEOF LPAREN type_specifier RPAREN %prec TYPENAME {
+    | SIZEOF LPAREN type_name RPAREN %prec TYPENAME{
+        free($3);
         $$=sizeof(int);
     }
-    | SIZEOF LPAREN expression RPAREN {
+    | SIZEOF LPAREN expression RPAREN{
         $$=sizeof(int);
     }
-    | SIZEOF unary_expression %prec SIZEOF {
+    | SIZEOF unary_expression %prec SIZEOF{
         $$=sizeof(int);
     }
     ;
 postfix_expression
-    : primary_expression {
+    : primary_expression{
         $$=$1;
     }
-    | postfix_expression LBRACKET expression RBRACKET {
+    | postfix_expression LBRACKET expression RBRACKET{
         $$=0;
     }
-    | postfix_expression LPAREN argument_list_opt RPAREN {
-        $$=0;
-    }
-    | postfix_expression DOT IDENTIFIER {
+    | postfix_expression DOT identifier{
         free($3);
         $$=0;
     }
-    | postfix_expression ARROW IDENTIFIER {
+    | postfix_expression ARROW identifier{
         free($3);
         $$=0;
     }
-    | postfix_expression INC {
+    | postfix_expression LPAREN argument_list_opt RPAREN{
+        $$=0;
+    }
+    | postfix_expression INC{
         $$=$1;
     }
-    | postfix_expression DEC {
+    | postfix_expression DEC{
         $$=$1;
     }
     ;
-    
 primary_expression
-    : IDENTIFIER {
-        $$=0;
+    : identifier{
+        string ident=string($1);
+        bool found=false;
+        for(const auto& s:symbolTable){
+            if(s.name==ident){
+                found=true;
+                if(s.kind=="struct"||s.kind=="union"||s.kind=="class"){
+                    yyerror("Cannot use struct/union/class type directly in an expression");
+                }
+                break;
+            }
+        }
+        if(!found){
+            yyerror("Undeclared identifier");
+        }
         free($1);
+        $$=0;
     }
-    | INT_LITERAL {
+    | INT_LITERAL{
         $$=static_cast<double>($1);
     }
-    | FLOAT_LITERAL {
+    | FLOAT_LITERAL{
         $$=$1;
     }
-    | CHAR_LITERAL {
+    | CHAR_LITERAL{
         $$=static_cast<double>(*$1);
         free($1);
     }
-    | STRING_LITERAL {
+    | STRING_LITERAL{
         $$=0;
         free($1);
     }
-    | LPAREN expression RPAREN {
+    | LPAREN expression RPAREN{
         $$=$2;
     }
-    | LBRACKET RBRACKET LPAREN parameter_list_opt RPAREN compound_statement {
+    | LBRACKET RBRACKET LPAREN parameter_list_opt RPAREN compound_statement{
         pushScope("lambda");
         popScope();
         $$=0;
@@ -814,30 +847,31 @@ argument_list_opt
     : argument_list
     | /* empty */
     ;
+
 argument_list
     : assignment_expression
     | argument_list COMMA assignment_expression
     ;
+
 %%
 
-int main(int argc, char** argv) {
-    if(argc>1) {
-        yyin=fopen(argv[1], "r");
-        if(!yyin) {
+int main(int argc,char** argv){
+    if(argc>1){
+        yyin=fopen(argv[1],"r");
+        if(!yyin){
             cerr<<"Cannot open file: "<<argv[1]<<endl;
             return 1;
         }
     }
     pushScope("global");
     yyparse();
-    if(error_count==0) {
+    if(error_count==0){
         cout<<"Parsing completed successfully!"<<endl;
         printSymbolTable();
-    } else {
+    }else{
         cout<<"Parsing finished with "<<error_count<<" errors."<<endl;
     }
-    if(yyin&&yyin!=stdin) {
+    if(yyin&&yyin!=stdin){
         fclose(yyin);
     }
-    return 0;
 }
