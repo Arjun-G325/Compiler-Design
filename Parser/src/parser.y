@@ -21,7 +21,6 @@ struct Symbol{
     string typeQualifier;
     string parentType;
 };
-
 vector<Symbol> symbolTable;
 stack<string> scopeStack;
 string currentType="";
@@ -55,9 +54,9 @@ string currentScope(){
     reverse(scope_parts.begin(),scope_parts.end());
     for(size_t i=0;i<scope_parts.size();++i){
         full_scope+=scope_parts[i];
-        if(i<scope_parts.size()-1){
+if(i<scope_parts.size()-1){
             full_scope+="::";
-        }
+}
     }
     return full_scope;
 }
@@ -211,7 +210,6 @@ function_definition
         free($2);
     }
     ;
-
 declaration
     : declaration_specifiers init_declarator_list SEMICOLON{
         currentStorageClass="";
@@ -237,7 +235,6 @@ declaration_specifiers
         $$=$2;
     }
     ;
-
 storage_class_specifier
     : STATIC{
         currentStorageClass="static";
@@ -246,13 +243,11 @@ storage_class_specifier
         currentStorageClass="extern";
     }
     ;
-
 type_qualifier
     : CONST{
         currentTypeQualifier="const";
     }
     ;
-
 init_declarator_list
     : init_declarator{
         string finalType=currentType;
@@ -284,7 +279,6 @@ init_declarator
         $$=$1;
     }
     ;
-
 initializer
     : LBRACE initializer_list_opt RBRACE
     ;
@@ -304,8 +298,15 @@ declarator
         pointer_level++;
         $$=$2;
     }
+    | LPAREN declarator RPAREN{
+        $$=$2;
+    }
+    | LPAREN ASTERISK direct_declarator RPAREN LPAREN parameter_list_opt RPAREN{
+        currentType += " function pointer";
+        pointer_level = 0;
+        $$=$3;
+    }
     ;
-
 direct_declarator
     : identifier array_declarator_list{
         if($2>0){
@@ -322,10 +323,8 @@ direct_declarator
         }
         $$=$2;
     }
-    | LPAREN declarator RPAREN{
-        $$=$2;
-    }
     | direct_declarator LPAREN parameter_list_opt RPAREN{
+        currentType+=" function";
         $$=$1;
     }
     ;
@@ -343,7 +342,6 @@ array_declarator_list
         $$=1;
     }
     ;
-
 fixed_dimension_list
     : LBRACKET expression RBRACKET{
         $$=1;
@@ -424,7 +422,6 @@ enum_declaration
         free($2);
     }
     ;
-
 enum_list
     : enum_list COMMA IDENTIFIER{
         addSymbol(string($3),"enum","enum constant");
@@ -463,7 +460,6 @@ identifier
         $$=$1;
     }
     ;
-
 type_name
     : IDENTIFIER %prec TYPENAME{
         string ident=string($1);
@@ -530,7 +526,8 @@ parameter_list
     ;
 parameter
     : declaration_specifiers declarator{
-        string paramType=string($1);
+        // Use the final type from the declarator, not just the initial one.
+        string paramType=currentType;
         if(pointer_level>0){
             paramType+=" pointer";
         }
@@ -543,7 +540,6 @@ parameter
         free($1);
     }
     ;
-
 compound_statement
     : LBRACE{
         pushScope("block");
