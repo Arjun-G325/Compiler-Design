@@ -1,5 +1,6 @@
 struct Point {
-    int x, y;
+    int x;
+    int y;
 };
 
 int distance(struct Point *p1, struct Point *p2) {
