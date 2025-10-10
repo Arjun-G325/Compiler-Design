@@ -3,7 +3,7 @@
 #include <cstdlib>
 #include <string>
 #include <vector>
-#include "../../Parser/src/y.tab.h"
+#include "../../Parser/src/parser.tab.h"
 
 int line=1;
 extern YYSTYPE yylval;
@@ -41,13 +41,13 @@ using namespace std;
 "private" { return PRIVATE; }
 "public" { return PUBLIC; }
 "protected" { return PROTECTED; }
-"bool" { return T_BOOL; }
-"void" { return T_VOID; }
-"int" { return T_INT; }
-"char" { return T_CHAR; }
-"float" { return T_FLOAT; }
-"double" { return T_DOUBLE; }
-"unsigned int" { return T_UNSIGNED_INT; }
+"bool" { return BOOL; }
+"void" { return VOID; }
+"int" { return INT; }
+"char" { return CHAR; }
+"float" { return FLOAT; }
+"double" { return DOUBLE; }
+"unsigned int" { return INT; }
 "sizeof" { return SIZEOF; }
 "va_list" { return VA_LIST; }
 "va_arg" { return VA_ARG; }
@@ -66,9 +66,9 @@ using namespace std;
     return STRING_LITERAL;
 }
 
-"+=" { return PLUS_ASSIGN; }
-"-=" { return MINUS_ASSIGN; }
-"*=" { return ASTERISK_ASSIGN; }
+"+=" { return ADD_ASSIGN; }
+"-=" { return SUB_ASSIGN; }
+"*=" { return MUL_ASSIGN; }
 "/=" { return DIV_ASSIGN; }
 "%=" { return MOD_ASSIGN; }
 "&=" { return AND_ASSIGN; }
@@ -77,33 +77,33 @@ using namespace std;
 "<<=" { return SHL_ASSIGN; }
 ">>=" { return SHR_ASSIGN; }
 
-"<<" { return SHL; }
-">>" { return SHR; }
-"<=" { return LEQ; }
-">=" { return GEQ; }
-"<" { return LT; }
-">" { return GT; }
-"==" { return EQ; }
-"!=" { return NEQ; }
-"&&" { return AND; }
-"||" { return OR; }
-"!" { return NOT; }
-"&" { return AMPERSAND; }
-"|" { return BIT_OR; }
-"^" { return BIT_XOR; }
-"~" { return BIT_NOT; }
-"++" { return INC; }
-"--" { return DEC; }
-"+" { return PLUS; }
-"-" { return MINUS; }
-"*" { return ASTERISK; }
-"/" { return DIV; }
-"%" { return MOD; }
+"<<" { return LSHIFT_OP; }
+">>" { return RSHIFT_OP; }
+"<=" { return LE_OP; }
+">=" { return GE_OP; }
+"<" { return '<'; }
+">" { return '>'; }
+"==" { return EQ_OP; }
+"!=" { return NE_OP; }
+"&&" { return AND_OP; }
+"||" { return OR_OP; }
+"!" { return '!'; }
+"&" { return '&'; }
+"|" { return '|'; }
+"^" { return '^'; }
+"~" { return '~'; }
+"++" { return INC_OP; }
+"--" { return DEC_OP; }
+"+" { return '+'; }
+"-" { return '-'; }
+"*" { return '*'; }
+"/" { return '/'; }
+"%" { return '%'; }
 "=" { return ASSIGN; }
 "::" { return COLON_COLON; }
 "..." { return DOT_DOT_DOT; }
 "." { return DOT; }
-"->" { return ARROW; }
+"->" { return PTR_OP; }
 
 "(" { return LPAREN; }
 ")" { return RPAREN; }
@@ -111,11 +111,11 @@ using namespace std;
 "}" { return RBRACE; }
 "[" { return LBRACKET; }
 "]" { return RBRACKET; }
-":" { return COLON; }
+":" { return ':'; }
 ";" { return SEMICOLON; }
 "," { return COMMA; }
-"#" { return HASH; }
-"?" { return QUESTION; }
+"#" { return '#'; }
+"?" { return '?'; }
 
 . { cerr<<"Unknown character: "<<yytext<<endl; }
 %%
