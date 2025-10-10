@@ -204,6 +204,27 @@ program
         Symbol* main_sym = lookup_symbol("main");
         if (!main_sym || main_sym->kind != SK_FUNCTION) {
             fprintf(stderr, "Error: undefined reference to 'main'\n");
+        } else {
+            // Check return type
+            if (main_sym->type->return_type->base_type != "int") {
+                fprintf(stderr, "Error: 'main' must return 'int'\n");
+            }
+
+            // Check parameters
+            size_t num_params = main_sym->type->parameter_types.size();
+            if (num_params != 0 && num_params != 2) {
+                fprintf(stderr, "Error: 'main' must have 0 or 2 arguments\n");
+            } else if (num_params == 2) {
+                Type* argc_type = main_sym->type->parameter_types[0];
+                Type* argv_type = main_sym->type->parameter_types[1];
+
+                if (argc_type->base_type != "int" || argc_type->pointer_level != 0) {
+                    fprintf(stderr, "Error: first argument to 'main' must be 'int'\n");
+                }
+                if (argv_type->base_type != "char" || (argv_type->pointer_level != 2 && !(argv_type->pointer_level == 1 && !argv_type->array_dimensions.empty()))) {
+                    fprintf(stderr, "Error: second argument to 'main' must be 'char**' or 'char*[]'\n");
+                }
+            }
         }
         exit_scope();
       }
@@ -222,7 +243,7 @@ external_declaration
     | enum_declaration
     | typedef_declaration
     ;
-    
+
 enum_declaration
     : ENUM identifier LBRACE enumerator_list RBRACE SEMICOLON
     {
@@ -294,7 +315,7 @@ declaration
             for (Symbol* sym : *symbols) {
                 // Check if base_type is a struct/union/enum and copy the complete type
                 if (base_type->kind == TK_STRUCT || base_type->kind == TK_UNION || base_type->kind == TK_ENUM) {
-                    
+
                     // For struct/union/enum types, copy the entire type structure
                     delete sym->type; // Delete the default type
                     sym->type = new Type(*base_type); // Copy the struct/union/enum type
@@ -338,7 +359,7 @@ init_declarator
         if (!$1->type->array_dimensions.empty()) {
             int array_size = $1->type->array_dimensions[0];
             int initializer_count = $3->size();
-            
+
             if (array_size >= 0 && initializer_count > array_size) {
                 yyerror(("too many initializer values for array of size " + to_string(array_size)).c_str());
             }
@@ -936,7 +957,19 @@ postfix_expression
         $$ = new ExprResult(0.0, func_sym->type->return_type, nullptr);
         delete func_expr;
       }
-    | postfix_expression LPAREN RPAREN { $$ = $1; }
+    | postfix_expression LPAREN RPAREN {
+        ExprResult* func_expr = $1;
+        Symbol* func_sym = lookup_symbol(func_expr->lvalue_symbol->name);
+        if (!func_sym || func_sym->kind != SK_FUNCTION) {
+            yyerror(("'" + func_expr->lvalue_symbol->name + "' is not a function").c_str());
+        } else {
+            if (func_sym->type->parameter_types.size() != 0) {
+                yyerror(("Wrong number of arguments to function '" + func_sym->name + "'").c_str());
+            }
+        }
+        $$ = new ExprResult(0.0, func_sym->type->return_type, nullptr);
+        delete func_expr;
+    }
     | postfix_expression INC_OP { $$ = $1; }
     | postfix_expression DEC_OP { $$ = $1; }
     ;
