@@ -7,6 +7,7 @@
 
     struct Type;
     struct Symbol;
+
     struct ExprResult {
         double dval;
         Type* type;
@@ -15,8 +16,10 @@
         ExprResult(double v = 0.0, Type* t = nullptr, Symbol* s = nullptr)
             : dval(v), type(t), lvalue_symbol(s), is_const_expr(false) {}
     };
+
     enum TypeKind { TK_BASE, TK_STRUCT, TK_CLASS, TK_UNION, TK_ENUM, TK_FUNCTION };
     enum SymbolKind { SK_VARIABLE, SK_TYPEDEF_NAME, SK_FUNCTION, SK_ENUM_CONSTANT };
+
     struct Type {
         TypeKind kind;
         std::string base_type;
@@ -57,6 +60,7 @@ extern int yylineno;
 extern char* yytext;
 extern FILE* yyin;
 void yyerror(const char* s);
+
 Type::Type(string base, TypeKind k) : kind(k), base_type(base), is_const(false), pointer_level(0), return_type(nullptr) {}
 
 Type::~Type() {
@@ -91,8 +95,7 @@ vector<Symbol*>* g_current_param_list = nullptr;
 bool g_allow_initializers = false;
 
 void enter_scope() { symbol_table.push(map<string, Symbol*>()); }
-void exit_scope() { if (!symbol_table.empty()) symbol_table.pop();
-}
+void exit_scope() { if (!symbol_table.empty()) symbol_table.pop(); }
 
 Type* lookup_type(const string& name) {
     if (type_table.count(name)) return type_table.at(name);
@@ -197,23 +200,25 @@ void yyerror(const char* s) {
 %%
 
 program
-    : { enter_scope();
-} external_declaration_list { exit_scope(); }
+    : { enter_scope(); } external_declaration_list {
+        Symbol* main_sym = lookup_symbol("main");
+        if (!main_sym || main_sym->kind != SK_FUNCTION) {
+            fprintf(stderr, "Error: undefined reference to 'main'\n");
+        }
+        exit_scope();
+      }
     ;
 
 external_declaration_list
     : external_declaration
-    |
-external_declaration_list external_declaration
+    | external_declaration_list external_declaration
     ;
 
 external_declaration
     : declaration
-    |
-function_definition
+    | function_definition
     | struct_declaration
-    |
-union_declaration
+    | union_declaration
     | enum_declaration
     | typedef_declaration
     ;
@@ -227,7 +232,7 @@ enum_declaration
         free($2);
     }
     ;
-    
+
 enumerator_list
     : enumerator { $$ = new vector<Symbol*>(); $$->push_back($1); }
     | enumerator_list COMMA enumerator { $1->push_back($3); $$ = $1; }
@@ -249,7 +254,7 @@ function_definition
     : declaration_specifiers declarator
       {
           Symbol* func_sym = $2;
-Type* return_type = $1;
+          Type* return_type = $1;
 
           func_sym->kind = SK_FUNCTION;
           func_sym->type->kind = TK_FUNCTION;
@@ -260,14 +265,14 @@ Type* return_type = $1;
               }
           }
           install_symbol(func_sym);
-g_current_function = func_sym;
+          g_current_function = func_sym;
           enter_scope();
           if (g_current_param_list) {
               for (Symbol* p : *g_current_param_list) {
                   install_symbol(p);
               }
               delete g_current_param_list;
-g_current_param_list = nullptr;
+              g_current_param_list = nullptr;
           }
       }
       compound_statement
@@ -277,7 +282,7 @@ g_current_param_list = nullptr;
           }
           g_current_function = nullptr;
           exit_scope();
-}
+      }
     ;
 
 declaration
@@ -289,9 +294,10 @@ declaration
             for (Symbol* sym : *symbols) {
                 // Check if base_type is a struct/union/enum and copy the complete type
                 if (base_type->kind == TK_STRUCT || base_type->kind == TK_UNION || base_type->kind == TK_ENUM) {
+                    
                     // For struct/union/enum types, copy the entire type structure
-                    delete sym->type;  // Delete the default type
-                    sym->type = new Type(*base_type);  // Copy the struct/union/enum type
+                    delete sym->type; // Delete the default type
+                    sym->type = new Type(*base_type); // Copy the struct/union/enum type
                 } else {
                     // For basic types, just set the base type and properties
                     sym->type->base_type = base_type->base_type;
@@ -305,29 +311,28 @@ declaration
     }
     | declaration_specifiers SEMICOLON { delete $1; }
     ;
+
 declaration_specifiers
     : storage_class_specifier declaration_specifiers { $$ = $2; }
-    |
-type_qualifier declaration_specifiers { if($2) $2->is_const = true; $$ = $2; }
-    | type_specifier { $$ = $1;
-}
+    | type_qualifier declaration_specifiers { if($2) $2->is_const = true; $$ = $2; }
+    | type_specifier { $$ = $1; }
     ;
 
 storage_class_specifier: STATIC | EXTERN | AUTO;
 type_qualifier: CONST;
+
 init_declarator_list
     : init_declarator { $$ = new vector<Symbol*>(); $$->push_back($1); }
-    |
-init_declarator_list COMMA init_declarator { $1->push_back($3); $$ = $1; }
+    | init_declarator_list COMMA init_declarator { $1->push_back($3); $$ = $1; }
     ;
+
 init_declarator
     : declarator { $$ = $1; }
-    |
-declarator ASSIGN assignment_expression {
+    | declarator ASSIGN assignment_expression {
         $1->dval = $3->dval;
         delete $3;
         $$ = $1;
-}
+    }
     | declarator ASSIGN initializer_list {
         // Handle array initialization with bounds checking
         if (!$1->type->array_dimensions.empty()) {
@@ -345,29 +350,26 @@ declarator ASSIGN assignment_expression {
 
 declarator
     : direct_declarator { $$ = $1; }
-    |
-'*' declarator { $2->type->pointer_level++; $$ = $2; }
+    | '*' declarator { $2->type->pointer_level++; $$ = $2; }
     ;
+
 direct_declarator
     : identifier {
         $$ = new Symbol();
-$$->name = string($1);
+        $$->name = string($1);
         $$->type = new Type();
         $$->kind = SK_VARIABLE;
         $$->dval = 0;
         $$->has_return = false;
         free($1);
     }
-    |
-LPAREN declarator RPAREN { $$ = $2; }
-| direct_declarator LPAREN parameter_list RPAREN {
+    | LPAREN declarator RPAREN { $$ = $2; }
+    | direct_declarator LPAREN parameter_list RPAREN {
         $$ = $1;
         g_current_param_list = $3;
-}
-    | direct_declarator LPAREN RPAREN { $$ = $1; g_current_param_list = nullptr;
-}
-    |
-direct_declarator LBRACKET expression_opt RBRACKET {
+    }
+    | direct_declarator LPAREN RPAREN { $$ = $1; g_current_param_list = nullptr; }
+    | direct_declarator LBRACKET expression_opt RBRACKET {
         $$ = $1;
         int dim_size = -1;
         if ($3) {
@@ -380,6 +382,7 @@ direct_declarator LBRACKET expression_opt RBRACKET {
         $$->type->array_dimensions.push_back(dim_size);
     }
     ;
+
 struct_declaration
     : STRUCT identifier LBRACE struct_declaration_list RBRACE SEMICOLON
     {
@@ -425,6 +428,7 @@ union_declaration
         free($2);
     }
     ;
+
 typedef_declaration
     : TYPEDEF declaration_specifiers declarator SEMICOLON
     {
@@ -479,6 +483,7 @@ typedef_declaration
     }
     ;
 declaration_list: declaration | declaration_list declaration;
+
 struct_declaration_list
     : struct_declaration_item { $$ = new vector<Symbol*>(); $$->push_back($1); }
     | struct_declaration_list struct_declaration_item { $1->push_back($2); $$ = $1; }
@@ -509,6 +514,7 @@ struct_declaration_item
     }
     ;
 struct_declaration: declaration_specifiers init_declarator_list SEMICOLON;
+
 identifier: IDENTIFIER { $$ = $1; };
 type_specifier
     : VOID   { $$ = new Type("void", TK_BASE); }
@@ -527,7 +533,7 @@ type_specifier
         } else {
             Type* t = lookup_type(name);
             if (t) {
-                $$ = new Type(*t);  // Copy the complete type
+                $$ = new Type(*t); // Copy the complete type
             } else {
                 yyerror(("Unknown type name '" + name + "'").c_str());
                 $$ = new Type("error");
@@ -551,6 +557,7 @@ enum_specifier
         free($2);
     }
     ;
+
 struct_or_union_specifier
     : STRUCT identifier
     {
@@ -591,8 +598,7 @@ struct_or_union_specifier
     ;
 compound_statement
     : LBRACE { enter_scope(); } statement_list RBRACE { exit_scope(); }
-    |
-LBRACE { enter_scope(); } RBRACE { exit_scope(); }
+    | LBRACE { enter_scope(); } RBRACE { exit_scope(); }
     ;
 
 statement_list: statement | statement_list statement;
@@ -600,40 +606,33 @@ statement
     : expression_statement
     | compound_statement
     | selection_statement
-    |
-iteration_statement
+    | iteration_statement
     | jump_statement
     | declaration
     ;
-
 expression_statement: expression_opt SEMICOLON;
 expression_opt
     : expression { $$ = $1; }
-    |
-/* empty */ { $$ = nullptr; }
+    | /* empty */ { $$ = nullptr; }
     ;
 selection_statement
     : IF LPAREN expression RPAREN statement %prec IF_WITHOUT_ELSE
-    |
-IF LPAREN expression RPAREN statement ELSE statement
+    | IF LPAREN expression RPAREN statement ELSE statement
     | SWITCH LPAREN expression RPAREN statement
     ;
 iteration_statement
     : WHILE LPAREN expression RPAREN statement
-    |
-FOR LPAREN expression_opt SEMICOLON expression_opt SEMICOLON expression_opt RPAREN statement
+    | FOR LPAREN expression_opt SEMICOLON expression_opt SEMICOLON expression_opt RPAREN statement
     | FOR LPAREN declaration expression_opt SEMICOLON expression_opt RPAREN statement
-    |
-DO statement WHILE LPAREN expression RPAREN SEMICOLON
+    | DO statement WHILE LPAREN expression RPAREN SEMICOLON
     ;
-
 jump_statement
     : RETURN expression_opt SEMICOLON {
         if (!g_current_function) {
             yyerror("'return' statement not in function");
         } else {
             g_current_function->has_return = true;
-Type* func_return_type = g_current_function->type->return_type;
+            Type* func_return_type = g_current_function->type->return_type;
             ExprResult* return_expr = $2;
 
             if (return_expr) {
@@ -650,20 +649,17 @@ Type* func_return_type = g_current_function->type->return_type;
             }
         }
     }
-    |
-BREAK SEMICOLON
+    | BREAK SEMICOLON
     | CONTINUE SEMICOLON
     | GOTO identifier SEMICOLON
     ;
 expression
     : assignment_expression { $$ = $1; }
-    |
-expression COMMA assignment_expression { delete $1; $$ = $3; }
+    | expression COMMA assignment_expression { delete $1; $$ = $3; }
     ;
 assignment_expression
     : conditional_expression { $$ = $1; }
-    |
-unary_expression ASSIGN assignment_expression {
+    | unary_expression ASSIGN assignment_expression {
     ExprResult* lhs = $1;
     ExprResult* rhs = $3;
     if (!lhs->lvalue_symbol) {
@@ -684,145 +680,123 @@ unary_expression ASSIGN assignment_expression {
         ExprResult* rhs = $3;
         if (!lhs->lvalue_symbol) {
             yyerror("lvalue required as left operand of assignment");
-$$ = new ExprResult(0.0, nullptr, nullptr);
+            $$ = new ExprResult(0.0, nullptr, nullptr);
         } else {
             lhs->lvalue_symbol->dval += rhs->dval;
-$$ = new ExprResult(lhs->lvalue_symbol->dval, lhs->type, nullptr);
+            $$ = new ExprResult(lhs->lvalue_symbol->dval, lhs->type, nullptr);
         }
         delete lhs;
         delete rhs;
-}
+    }
     | unary_expression SUB_ASSIGN assignment_expression {
         ExprResult* lhs = $1;
         ExprResult* rhs = $3;
         if (!lhs->lvalue_symbol) {
             yyerror("lvalue required as left operand of assignment");
-$$ = new ExprResult(0.0, nullptr, nullptr);
+            $$ = new ExprResult(0.0, nullptr, nullptr);
         } else {
             lhs->lvalue_symbol->dval -= rhs->dval;
-$$ = new ExprResult(lhs->lvalue_symbol->dval, lhs->type, nullptr);
+            $$ = new ExprResult(lhs->lvalue_symbol->dval, lhs->type, nullptr);
         }
         delete lhs;
         delete rhs;
-}
+    }
     | unary_expression MUL_ASSIGN assignment_expression {
         ExprResult* lhs = $1;
         ExprResult* rhs = $3;
         if (!lhs->lvalue_symbol) {
             yyerror("lvalue required as left operand of assignment");
-$$ = new ExprResult(0.0, nullptr, nullptr);
+            $$ = new ExprResult(0.0, nullptr, nullptr);
         } else {
             lhs->lvalue_symbol->dval *= rhs->dval;
-$$ = new ExprResult(lhs->lvalue_symbol->dval, lhs->type, nullptr);
+            $$ = new ExprResult(lhs->lvalue_symbol->dval, lhs->type, nullptr);
         }
         delete lhs;
         delete rhs;
-}
+    }
     | unary_expression DIV_ASSIGN assignment_expression {
         ExprResult* lhs = $1;
         ExprResult* rhs = $3;
         if (!lhs->lvalue_symbol) {
             yyerror("lvalue required as left operand of assignment");
-$$ = new ExprResult(0.0, nullptr, nullptr);
+            $$ = new ExprResult(0.0, nullptr, nullptr);
         } else {
             lhs->lvalue_symbol->dval /= rhs->dval;
-$$ = new ExprResult(lhs->lvalue_symbol->dval, lhs->type, nullptr);
+            $$ = new ExprResult(lhs->lvalue_symbol->dval, lhs->type, nullptr);
         }
         delete lhs;
         delete rhs;
-}
+    }
     ;
 
 conditional_expression
     : logical_or_expression { $$ = $1; }
-    |
-logical_or_expression '?' expression ':' conditional_expression {
+    | logical_or_expression '?' expression ':' conditional_expression {
         $$ = $5;
         delete $1;
         delete $3;
-      }
+    }
     ;
 logical_or_expression
-    : logical_and_expression { $$ = $1;
-}
-    | logical_or_expression OR_OP logical_and_expression { $$ = new ExprResult($1->dval || $3->dval, new Type("bool")); delete $1;
-delete $3; }
+    : logical_and_expression { $$ = $1; }
+    | logical_or_expression OR_OP logical_and_expression { $$ = new ExprResult($1->dval || $3->dval, new Type("bool")); delete $1; delete $3; }
     ;
 
 logical_and_expression
-    : bitwise_or_expression { $$ = $1;
-}
-    | logical_and_expression AND_OP bitwise_or_expression { $$ = new ExprResult($1->dval && $3->dval, new Type("bool")); delete $1;
-delete $3; }
+    : bitwise_or_expression { $$ = $1; }
+    | logical_and_expression AND_OP bitwise_or_expression { $$ = new ExprResult($1->dval && $3->dval, new Type("bool")); delete $1; delete $3; }
     ;
 
 bitwise_or_expression
-    : bitwise_xor_expression { $$ = $1;
-}
-    | bitwise_or_expression '|' bitwise_xor_expression { $$ = new ExprResult((double)((long)$1->dval | (long)$3->dval), $1->type); delete $3;
-}
+    : bitwise_xor_expression { $$ = $1; }
+    | bitwise_or_expression '|' bitwise_xor_expression { $$ = new ExprResult((double)((long)$1->dval | (long)$3->dval), $1->type); delete $3; }
     ;
 
 bitwise_xor_expression
     : bitwise_and_expression { $$ = $1; }
-    |
-bitwise_xor_expression '^' bitwise_and_expression { $$ = new ExprResult((double)((long)$1->dval ^ (long)$3->dval), $1->type); delete $3; }
+    | bitwise_xor_expression '^' bitwise_and_expression { $$ = new ExprResult((double)((long)$1->dval ^ (long)$3->dval), $1->type); delete $3; }
     ;
+
 bitwise_and_expression
     : equality_expression { $$ = $1; }
-    |
-bitwise_and_expression '&' equality_expression { $$ = new ExprResult((double)((long)$1->dval & (long)$3->dval), $1->type); delete $3; }
+    | bitwise_and_expression '&' equality_expression { $$ = new ExprResult((double)((long)$1->dval & (long)$3->dval), $1->type); delete $3; }
     ;
+
 equality_expression
     : relational_expression { $$ = $1; }
-    |
-equality_expression EQ_OP relational_expression { $$ = new ExprResult($1->dval == $3->dval, new Type("bool")); delete $1; delete $3;
-}
-    | equality_expression NE_OP relational_expression { $$ = new ExprResult($1->dval != $3->dval, new Type("bool")); delete $1;
-delete $3; }
+    | equality_expression EQ_OP relational_expression { $$ = new ExprResult($1->dval == $3->dval, new Type("bool")); delete $1; delete $3; }
+    | equality_expression NE_OP relational_expression { $$ = new ExprResult($1->dval != $3->dval, new Type("bool")); delete $1; delete $3; }
     ;
 
 relational_expression
-    : shift_expression { $$ = $1;
-}
-    | relational_expression '<' shift_expression { $$ = new ExprResult($1->dval < $3->dval, new Type("bool")); delete $1;
-delete $3; }
-    | relational_expression '>' shift_expression { $$ = new ExprResult($1->dval > $3->dval, new Type("bool"));
-delete $1; delete $3; }
-    | relational_expression LE_OP shift_expression { $$ = new ExprResult($1->dval <= $3->dval, new Type("bool"));
-delete $1; delete $3; }
-    | relational_expression GE_OP shift_expression { $$ = new ExprResult($1->dval >= $3->dval, new Type("bool"));
-delete $1; delete $3; }
+    : shift_expression { $$ = $1; }
+    | relational_expression '<' shift_expression { $$ = new ExprResult($1->dval < $3->dval, new Type("bool")); delete $1; delete $3; }
+    | relational_expression '>' shift_expression { $$ = new ExprResult($1->dval > $3->dval, new Type("bool")); delete $1; delete $3; }
+    | relational_expression LE_OP shift_expression { $$ = new ExprResult($1->dval <= $3->dval, new Type("bool")); delete $1; delete $3; }
+    | relational_expression GE_OP shift_expression { $$ = new ExprResult($1->dval >= $3->dval, new Type("bool")); delete $1; delete $3; }
     ;
 
 shift_expression
-    : additive_expression { $$ = $1;
-}
-    | shift_expression LSHIFT_OP additive_expression { $$ = new ExprResult((double)((long)$1->dval << (long)$3->dval), $1->type); delete $3;
-}
-    | shift_expression RSHIFT_OP additive_expression { $$ = new ExprResult((double)((long)$1->dval >> (long)$3->dval), $1->type); delete $3;
-}
+    : additive_expression { $$ = $1; }
+    | shift_expression LSHIFT_OP additive_expression { $$ = new ExprResult((double)((long)$1->dval << (long)$3->dval), $1->type); delete $3; }
+    | shift_expression RSHIFT_OP additive_expression { $$ = new ExprResult((double)((long)$1->dval >> (long)$3->dval), $1->type); delete $3; }
     ;
 
 additive_expression
     : multiplicative_expression { $$ = $1; }
-    |
-additive_expression '+' multiplicative_expression { $$ = new ExprResult($1->dval + $3->dval, $1->type); delete $3; }
-    |
-additive_expression '-' multiplicative_expression { $$ = new ExprResult($1->dval - $3->dval, $1->type); delete $3; }
+    | additive_expression '+' multiplicative_expression { $$ = new ExprResult($1->dval + $3->dval, $1->type); delete $3; }
+    | additive_expression '-' multiplicative_expression { $$ = new ExprResult($1->dval - $3->dval, $1->type); delete $3; }
     ;
+
 multiplicative_expression
     : cast_expression { $$ = $1; }
-    |
-multiplicative_expression '*' cast_expression { $$ = new ExprResult($1->dval * $3->dval, $1->type); delete $3; }
-    |
-multiplicative_expression '/' cast_expression { $$ = new ExprResult($1->dval / $3->dval, $1->type); delete $3; }
-    |
-multiplicative_expression '%' cast_expression { $$ = new ExprResult((double)((long)$1->dval % (long)$3->dval), $1->type); delete $3; }
+    | multiplicative_expression '*' cast_expression { $$ = new ExprResult($1->dval * $3->dval, $1->type); delete $3; }
+    | multiplicative_expression '/' cast_expression { $$ = new ExprResult($1->dval / $3->dval, $1->type); delete $3; }
+    | multiplicative_expression '%' cast_expression { $$ = new ExprResult((double)((long)$1->dval % (long)$3->dval), $1->type); delete $3; }
     ;
+
 cast_expression
-    : unary_expression { $$ = $1;
-}
+    : unary_expression { $$ = $1; }
     | LPAREN type_name RPAREN cast_expression {
         // Only proceed with cast if type_name is valid
         if ($2->base_type != "error") {
@@ -838,21 +812,15 @@ type_name: type_specifier { $$ = $1; } | type_specifier abstract_declarator { $$
 abstract_declarator: '*' { $$ = nullptr; } | '*' abstract_declarator { $$ = $2; };
 unary_expression
     : postfix_expression { $$ = $1; }
-    |
-INC_OP unary_expression { $$ = $2; }
-    | DEC_OP unary_expression { $$ = $2;
-}
-    | '-' cast_expression %prec '-' { $$ = new ExprResult(-$2->dval, $2->type);
-}
-    | '!' cast_expression { $$ = new ExprResult(!$2->dval, new Type("bool")); delete $2;
-}
+    | INC_OP unary_expression { $$ = $2; }
+    | DEC_OP unary_expression { $$ = $2; }
+    | '-' cast_expression %prec '-' { $$ = new ExprResult(-$2->dval, $2->type); }
+    | '!' cast_expression { $$ = new ExprResult(!$2->dval, new Type("bool")); delete $2; }
     ;
-
 
 postfix_expression
     : primary_expression { $$ = $1; }
-    |
-postfix_expression LBRACKET expression RBRACKET {
+    | postfix_expression LBRACKET expression RBRACKET {
     ExprResult* array_expr = $1;
     ExprResult* index_expr = $3;
     Type* new_type = nullptr;
@@ -863,12 +831,10 @@ postfix_expression LBRACKET expression RBRACKET {
         new_type = new Type("error");
     } else {
         new_type = new Type(*array_expr->type);
-        
         // Handle array bounds checking for the first dimension
         // Only check bounds in non-initializer contexts (when we have an lvalue symbol)
         if (!new_type->array_dimensions.empty() && array_expr->lvalue_symbol) {
             int array_size = new_type->array_dimensions[0];
-            
             // Check if we have a constant expression for bounds checking
             if (index_expr->is_const_expr && array_size >= 0) {
                 int index_value = (int)index_expr->dval;
@@ -914,7 +880,8 @@ postfix_expression LBRACKET expression RBRACKET {
             } else {
                 Symbol* member_sym = it->second;
                 // The result is an lvalue if the struct expression was an lvalue
-                Symbol* result_sym = struct_expr->lvalue_symbol ? member_sym : nullptr;
+                Symbol* result_sym = struct_expr->lvalue_symbol ?
+                    member_sym : nullptr;
                 $$ = new ExprResult(member_sym->dval, member_sym->type, result_sym);
             }
         }
@@ -945,8 +912,7 @@ postfix_expression LBRACKET expression RBRACKET {
         delete ptr_expr;
         free($3);
     }
-    |
-postfix_expression LPAREN argument_list RPAREN {
+    | postfix_expression LPAREN argument_list RPAREN {
         ExprResult* func_expr = $1;
         vector<ExprResult*>* args = $3;
         Symbol* func_sym = lookup_symbol(func_expr->lvalue_symbol->name);
@@ -970,63 +936,59 @@ postfix_expression LPAREN argument_list RPAREN {
         $$ = new ExprResult(0.0, func_sym->type->return_type, nullptr);
         delete func_expr;
       }
-    |
-postfix_expression LPAREN RPAREN { $$ = $1;
-}
+    | postfix_expression LPAREN RPAREN { $$ = $1; }
     | postfix_expression INC_OP { $$ = $1; }
-    |
-postfix_expression DEC_OP { $$ = $1; }
+    | postfix_expression DEC_OP { $$ = $1; }
     ;
+
 primary_expression
     : identifier {
         Symbol* sym = lookup_symbol($1);
         if (!sym) {
             yyerror(("Undeclared identifier '" + string($1) + "'").c_str());
-$$ = new ExprResult(0, new Type("error"), nullptr);
+            $$ = new ExprResult(0, new Type("error"), nullptr);
         } else {
             $$ = new ExprResult(sym->dval, sym->type, sym);
         }
         free($1);
     }
-    |
-INT_LITERAL    { $$ = new ExprResult($1, new Type("int"), nullptr); $$->is_const_expr = true; }
-    |
-FLOAT_LITERAL  { $$ = new ExprResult($1, new Type("float"), nullptr); $$->is_const_expr = true; }
-    |
-CHAR_LITERAL   { $$ = new ExprResult(0, new Type("char"), nullptr); $$->is_const_expr = true; }
-    |
-STRING_LITERAL { $$ = new ExprResult(0, new Type("char*"), nullptr); }
-    |
-LPAREN expression RPAREN { $$ = $2; }
+    | INT_LITERAL    { $$ = new ExprResult($1, new Type("int"), nullptr); $$->is_const_expr = true; }
+    | FLOAT_LITERAL  { $$ = new ExprResult($1, new Type("float"), nullptr); $$->is_const_expr = true; }
+    | CHAR_LITERAL   { $$ = new ExprResult(0, new Type("char"), nullptr); $$->is_const_expr = true; }
+    | STRING_LITERAL { $$ = new ExprResult(0, new Type("char*"), nullptr); }
+    | LPAREN expression RPAREN { $$ = $2; }
     ;
+
 parameter_list
     : parameter_declaration { $$ = new vector<Symbol*>(); $$->push_back($1); }
-    |
-parameter_list COMMA parameter_declaration { $1->push_back($3); $$ = $1; }
+    | parameter_list COMMA parameter_declaration { $1->push_back($3); $$ = $1; }
     ;
+
 parameter_declaration
     : declaration_specifiers declarator {
         Symbol* sym = $2;
-sym->type->base_type = $1->base_type;
+        sym->type->base_type = $1->base_type;
         sym->type->is_const = $1->is_const;
         delete $1;
         $$ = sym;
     }
     ;
+
 argument_list
     : assignment_expression { $$ = new vector<ExprResult*>(); $$->push_back($1); }
-    |
-argument_list COMMA assignment_expression { $1->push_back($3); $$ = $1; }
+    | argument_list COMMA assignment_expression { $1->push_back($3); $$ = $1; }
     ;
-    
+
 initializer_list
     : LBRACE initializer_items RBRACE { $$ = $2; }
     | LBRACE RBRACE { $$ = new vector<ExprResult*>(); }
     ;
+
 initializer_items
     : assignment_expression { $$ = new vector<ExprResult*>(); $$->push_back($1); }
     | initializer_items COMMA assignment_expression { $1->push_back($3); $$ = $1; }
     ;
+
 %%
 
 int main(int argc, char** argv) {
@@ -1034,7 +996,7 @@ int main(int argc, char** argv) {
         yyin = fopen(argv[1], "r");
         if (!yyin) {
             cerr << "Cannot open file: " << argv[1] << endl;
-return 1;
+            return 1;
         }
     }
     yyparse();
