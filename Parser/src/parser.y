@@ -141,6 +141,9 @@ vector<string> g_unresolved_gotos;
 Type* g_current_base_type = nullptr;
 AccessSpecifier g_current_access_specifier = AS_PRIVATE; // Default for class
 Type* g_current_class_scope = nullptr;
+bool g_parsing_lambda = false;
+Type* g_inferred_return_type = nullptr;
+
 
 void enter_scope() { symbol_table.push(map<string, Symbol*>()); }
 void exit_scope() { if (!symbol_table.empty()) symbol_table.pop(); }
@@ -178,7 +181,7 @@ void install_symbol(Symbol* sym) {
     }
 }
 
-void yyerror(const char* s) {
+void yyerror(const char*s) {
     cerr << "Parser Error at line " << yylineno << ": " << s << " near '" << yytext << "'" << endl;
 }
 
@@ -217,10 +220,10 @@ void yyerror(const char* s) {
 %type <expr_ptr> logical_and_expression bitwise_or_expression bitwise_xor_expression
 %type <expr_ptr> bitwise_and_expression equality_expression relational_expression shift_expression
 %type <expr_ptr> additive_expression multiplicative_expression cast_expression
-%type <expr_ptr> unary_expression postfix_expression primary_expression
+%type <expr_ptr> unary_expression postfix_expression primary_expression lambda_expression
 
 %type <type_ptr> type_specifier declaration_specifiers type_name abstract_declarator struct_or_union_specifier enum_specifier type_qualifier
-%type <symbol_list_ptr> init_declarator_list parameter_list enumerator_list struct_declaration_list struct_declaration_item
+%type <symbol_list_ptr> init_declarator_list parameter_list enumerator_list struct_declaration_list struct_declaration_item parameter_list_opt
 %type <symbol_ptr> declarator direct_declarator init_declarator parameter_declaration enumerator
 %type <str> identifier
 %type <member_def_list_ptr> member_declaration_list member_declaration
@@ -230,8 +233,6 @@ void yyerror(const char* s) {
 
 %type <initializer_item_list_ptr> initializer_list initializer_items
 %type <initializer_item_ptr> initializer
-
-
 
 %right ASSIGN ADD_ASSIGN SUB_ASSIGN MUL_ASSIGN DIV_ASSIGN MOD_ASSIGN AND_ASSIGN OR_ASSIGN XOR_ASSIGN SHL_ASSIGN SHR_ASSIGN
 %right '?'
@@ -531,17 +532,21 @@ init_declarator
         sym->dval = expr->dval;
 
         if (g_current_base_type && g_current_base_type->base_type == "auto") {
-            // Type deduction for auto.
-            // The declarator part (e.g., *) is already in sym->type.
-            // We compose it with the expression's type.
-            sym->type->base_type = expr->type->base_type;
-            sym->type->kind = expr->type->kind;
-            sym->type->members = expr->type->members;
-            sym->type->is_const = g_current_base_type->is_const || sym->type->is_const;
-            sym->type->pointer_level += expr->type->pointer_level;
-            sym->type->array_dimensions.insert(sym->type->array_dimensions.end(),
-                                               expr->type->array_dimensions.begin(),
-                                               expr->type->array_dimensions.end());
+            if (expr->type && expr->type->kind == TK_FUNCTION) {
+                // Lambda function assignment to auto
+                sym->type = expr->type;
+                sym->kind = SK_FUNCTION;
+            } else {
+                // Type deduction for auto variables.
+                sym->type->base_type = expr->type->base_type;
+                sym->type->kind = expr->type->kind;
+                sym->type->members = expr->type->members;
+                sym->type->is_const = g_current_base_type->is_const || sym->type->is_const;
+                sym->type->pointer_level += expr->type->pointer_level;
+                sym->type->array_dimensions.insert(sym->type->array_dimensions.end(),
+                                                   expr->type->array_dimensions.begin(),
+                                                   expr->type->array_dimensions.end());
+            }
         }
 
         delete expr;
@@ -917,7 +922,13 @@ iteration_statement
 
 jump_statement
     : RETURN expression_opt SEMICOLON {
-        if (!g_current_function) {
+        if (g_parsing_lambda) {
+            if ($2) { // expression is present
+                g_inferred_return_type = new Type(*$2->type);
+            } else {
+                g_inferred_return_type = new Type("void");
+            }
+        } else if (!g_current_function) {
             yyerror("'return' statement not in function");
         } else {
             g_current_function->has_return = true;
@@ -1413,6 +1424,48 @@ primary_expression
     | CHAR_LITERAL { $$ = new ExprResult((double)$1[1], new Type("char")); $$->is_const_expr = true; free($1); }
     | STRING_LITERAL { $$ = new ExprResult(0.0, new Type("char")); $$->type->pointer_level = 1; free($1); }
     | LPAREN expression RPAREN { $$ = $2; }
+    | lambda_expression { $$ = $1; }
+    ;
+
+lambda_expression
+    : LBRACKET RBRACKET LPAREN parameter_list_opt RPAREN 
+      {
+          g_parsing_lambda = true;
+          g_inferred_return_type = nullptr;
+          enter_scope();
+          if ($4) {
+              for (Symbol* p : *$4) {
+                  install_symbol(p);
+              }
+          }
+      }
+      compound_statement
+      {
+          exit_scope();
+          g_parsing_lambda = false;
+          Type* func_type = new Type("", TK_FUNCTION);
+          if (g_inferred_return_type) {
+              func_type->return_type = g_inferred_return_type;
+          } else {
+              func_type->return_type = new Type("void");
+          }
+          if ($4) {
+              for (Symbol* p : *$4) {
+                  func_type->parameter_types.push_back(p->type);
+              }
+              delete $4;
+          }
+          Symbol* lambda_sym = new Symbol();
+          lambda_sym->name = "__lambda"; // Anonymous
+          lambda_sym->type = func_type;
+          lambda_sym->kind = SK_FUNCTION;
+          $$ = new ExprResult(0.0, func_type, lambda_sym);
+      }
+    ;
+
+parameter_list_opt
+    : /* empty */ { $$ = nullptr; }
+    | parameter_list { $$ = $1; }
     ;
 
 parameter_list
