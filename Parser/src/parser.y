@@ -539,7 +539,14 @@ struct_declaration_item
             // For struct members, we take the first declarator and use it as the member
             Symbol* member_sym = (*symbols)[0];
             member_sym->type->base_type = base_type->base_type;
+            member_sym->type->kind = base_type->kind;
             member_sym->type->is_const = base_type->is_const || member_sym->type->is_const;
+
+            // If the base type is a struct or union, copy its member list.
+            if (base_type->kind == TK_STRUCT || base_type->kind == TK_UNION) {
+                member_sym->type->members = base_type->members;
+            }
+            
             $$ = member_sym;
             // Clean up the rest
             for (size_t i = 1; i < symbols->size(); ++i) {
@@ -630,11 +637,21 @@ struct_or_union_specifier
     {
         // Anonymous struct
         $$ = new Type("", TK_STRUCT);
+        // Store the member declarations in the type
+        for (Symbol* member : *$3) {
+            $$->members[member->name] = member;
+        }
+        delete $3;
     }
     | UNION LBRACE struct_declaration_list RBRACE
     {
         // Anonymous union
         $$ = new Type("", TK_UNION);
+        // Store the member declarations in the type
+        for (Symbol* member : *$3) {
+            $$->members[member->name] = member;
+        }
+        delete $3;
     }
     ;
 compound_statement
@@ -952,6 +969,9 @@ postfix_expression
         if (struct_expr->type->kind != TK_STRUCT && struct_expr->type->kind != TK_UNION) {
             yyerror("member access requires struct or union type");
             $$ = new ExprResult(0.0, new Type("error"), nullptr);
+        } else if (struct_expr->type->pointer_level > 0) {
+            yyerror("member access requires struct/union type, not pointer to struct/union (use -> instead)");
+            $$ = new ExprResult(0.0, new Type("error"), nullptr);
         } else {
             // Look up the member in the struct/union
             auto it = struct_expr->type->members.find(member_name);
@@ -961,8 +981,7 @@ postfix_expression
             } else {
                 Symbol* member_sym = it->second;
                 // The result is an lvalue if the struct expression was an lvalue
-                Symbol* result_sym = struct_expr->lvalue_symbol ?
-                member_sym : nullptr;
+                Symbol* result_sym = struct_expr->lvalue_symbol ? member_sym : nullptr;
                 $$ = new ExprResult(member_sym->dval, member_sym->type, result_sym);
             }
         }
@@ -974,14 +993,19 @@ postfix_expression
         ExprResult* ptr_expr = $1;
         string member_name = string($3);
         
+        // Check if it's a pointer to struct/union
         if (ptr_expr->type->pointer_level == 0 || 
             (ptr_expr->type->kind != TK_STRUCT && ptr_expr->type->kind != TK_UNION)) {
             yyerror("pointer member access requires pointer to struct or union");
             $$ = new ExprResult(0.0, new Type("error"), nullptr);
         } else {
+            // Get the base type (the struct/union being pointed to)
+            Type* base_type = new Type(*ptr_expr->type);
+            base_type->pointer_level--;
+            
             // Look up the member in the struct/union
-            auto it = ptr_expr->type->members.find(member_name);
-            if (it == ptr_expr->type->members.end()) {
+            auto it = base_type->members.find(member_name);
+            if (it == base_type->members.end()) {
                 yyerror(("no member named '" + member_name + "' in struct/union").c_str());
                 $$ = new ExprResult(0.0, new Type("error"), nullptr);
             } else {
@@ -989,6 +1013,7 @@ postfix_expression
                 // ptr->member is equivalent to (*ptr).member, so it's an lvalue
                 $$ = new ExprResult(member_sym->dval, member_sym->type, member_sym);
             }
+            delete base_type;
         }
         delete ptr_expr;
         free($3);
