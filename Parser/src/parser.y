@@ -9,6 +9,10 @@
     struct Symbol;
     struct ExprResult;
     struct InitializerItem;
+
+    // Enum for access specifiers
+    enum AccessSpecifier { AS_PUBLIC, AS_PRIVATE, AS_PROTECTED };
+
 struct ExprResult {
         double dval;
         Type* type;
@@ -28,7 +32,6 @@ InitializerItem(ExprResult* e = nullptr) : is_list(false), expr(e), list(nullptr
             if (is_list) {
                 if (list) {
                     for (auto item : *list) {
-            
                         delete item;
                     }
                     delete list;
@@ -44,21 +47,32 @@ struct Type {
         TypeKind kind;
         std::string base_type;
         bool is_const;
+        bool is_unsigned; // Added for unsigned support
         int pointer_level;
-        std::map<std::string, Symbol*> members;
+std::map<std::string, Symbol*> members;
         std::vector<int> array_dimensions;
         Type* return_type;
         std::vector<Type*> parameter_types;
         Type(std::string base = "", TypeKind k = TK_BASE);
         std::string toString() const;
-        ~Type();
+~Type();
     };
     struct Symbol {
         std::string name;
         Type* type;
         SymbolKind kind;
         double dval;
-        bool has_return;
+bool has_return;
+        AccessSpecifier access; // Added for class member access control
+    };
+    
+    // For two-pass member checking (within a class)
+    struct MemberDef {
+        std::string name;
+        Type* type;
+        AccessSpecifier access;
+        SymbolKind kind;
+void* definition; // Can be a Symbol* for variables or a FunctionDef* for functions
     };
 }
 
@@ -80,7 +94,7 @@ extern int yylineno;
 extern char* yytext;
 extern FILE* yyin;
 void yyerror(const char* s);
-Type::Type(string base, TypeKind k) : kind(k), base_type(base), is_const(false), pointer_level(0), return_type(nullptr) {}
+Type::Type(string base, TypeKind k) : kind(k), base_type(base), is_const(false), is_unsigned(false), pointer_level(0), return_type(nullptr) {}
 
 Type::~Type() {
     delete return_type;
@@ -89,7 +103,8 @@ Type::~Type() {
 string Type::toString() const {
     string desc = "";
     if (is_const) desc += "const ";
-    if (kind == TK_FUNCTION && return_type) {
+    if (is_unsigned) desc += "unsigned ";
+if (kind == TK_FUNCTION && return_type) {
         desc += return_type->toString() + " function(";
         for (size_t i = 0; i < parameter_types.size(); ++i) {
             desc += parameter_types[i]->toString();
@@ -98,8 +113,8 @@ string Type::toString() const {
         desc += ")";
     } else {
         desc += base_type;
-        for (int i = 0; i < pointer_level; ++i) desc += "*";
-        for (int dim : array_dimensions) {
+for (int i = 0; i < pointer_level; ++i) desc += "*";
+for (int dim : array_dimensions) {
             desc += "[" + (dim >= 0 ? to_string(dim) : "") + "]";
         }
     }
@@ -117,6 +132,8 @@ int g_loop_depth = 0;
 map<string, bool> g_labels;
 vector<string> g_unresolved_gotos;
 Type* g_current_base_type = nullptr;
+AccessSpecifier g_current_access_specifier = AS_PRIVATE; // Default for class
+Type* g_current_class_scope = nullptr;
 
 
 void enter_scope() { symbol_table.push(map<string, Symbol*>()); }
@@ -130,7 +147,7 @@ Type* lookup_type(const string& name) {
 
 Symbol* lookup_symbol(const string& name) {
     stack<map<string, Symbol*>> temp_stack = symbol_table;
-    while (!temp_stack.empty()) {
+while (!temp_stack.empty()) {
         auto& current_scope = temp_stack.top();
         if (current_scope.count(name)) return current_scope.at(name);
         temp_stack.pop();
@@ -149,7 +166,7 @@ void install_type(const string& name, Type* type) {
 void install_symbol(Symbol* sym) {
     if (symbol_table.empty()) enter_scope();
     auto& current_scope = symbol_table.top();
-    if (current_scope.count(sym->name)) {
+if (current_scope.count(sym->name)) {
         yyerror(("Redeclaration of '" + sym->name + "'").c_str());
     } else {
         current_scope[sym->name] = sym;
@@ -164,7 +181,7 @@ void yyerror(const char* s) {
 
 %token CONST IF ELSE WHILE FOR RETURN BREAK CONTINUE GOTO SWITCH CASE DEFAULT DO SIZEOF
 %token STATIC EXTERN AUTO STRUCT UNION ENUM TYPEDEF CLASS PUBLIC PROTECTED PRIVATE
-%token BOOL VOID INT CHAR FLOAT DOUBLE
+%token BOOL VOID INT CHAR FLOAT DOUBLE UNSIGNED
 %token VA_LIST VA_ARG VA_START VA_END
 %token <ival> INT_LITERAL
 %token <dval> FLOAT_LITERAL
@@ -177,7 +194,7 @@ void yyerror(const char* s) {
 
 %union {
     double dval;
-    int ival;
+int ival;
     char* str;
     Type* type_ptr;
     Symbol* symbol_ptr;
@@ -186,6 +203,9 @@ void yyerror(const char* s) {
     std::vector<ExprResult*>* arg_list_ptr;
     InitializerItem* initializer_item_ptr;
     std::vector<InitializerItem*>* initializer_item_list_ptr;
+    std::vector<MemberDef*>* member_def_list_ptr;
+    MemberDef* member_def_ptr;
+    AccessSpecifier access_specifier_val;
 }
 
 %type <expr_ptr> expression expression_opt assignment_expression conditional_expression logical_or_expression
@@ -194,10 +214,13 @@ void yyerror(const char* s) {
 %type <expr_ptr> additive_expression multiplicative_expression cast_expression
 %type <expr_ptr> unary_expression postfix_expression primary_expression
 
-%type <type_ptr> type_specifier declaration_specifiers type_name abstract_declarator struct_or_union_specifier enum_specifier
+%type <type_ptr> type_specifier declaration_specifiers type_name abstract_declarator struct_or_union_specifier enum_specifier type_qualifier
 %type <symbol_list_ptr> init_declarator_list parameter_list enumerator_list struct_declaration_list
 %type <symbol_ptr> declarator direct_declarator init_declarator parameter_declaration struct_declaration_item enumerator
 %type <str> identifier
+%type <member_def_list_ptr> member_declaration_list
+%type <member_def_ptr> member_declaration
+%type <access_specifier_val> access_specifier
 
 %type <arg_list_ptr> argument_list
 
@@ -230,10 +253,9 @@ void yyerror(const char* s) {
 %%
 
 program
-    : { enter_scope();
-    } external_declaration_list {
+    : { enter_scope(); } external_declaration_list {
         Symbol* main_sym = lookup_symbol("main");
-        if (!main_sym || main_sym->kind != SK_FUNCTION) {
+if (!main_sym || main_sym->kind != SK_FUNCTION) {
             fprintf(stderr, "Error: undefined reference to 'main'\n");
         } else {
             // Check return type
@@ -243,11 +265,11 @@ program
 
             // Check parameters
             size_t num_params = main_sym->type->parameter_types.size();
-            if (num_params != 0 && num_params != 2) {
+if (num_params != 0 && num_params != 2) {
                 fprintf(stderr, "Error: 'main' must have 0 or 2 arguments\n");
             } else if (num_params == 2) {
                 Type* argc_type = main_sym->type->parameter_types[0];
-                Type* argv_type = main_sym->type->parameter_types[1];
+Type* argv_type = main_sym->type->parameter_types[1];
 
                 if (argc_type->base_type != "int" || argc_type->pointer_level != 0) {
                     fprintf(stderr, "Error: first argument to 'main' must be 'int'\n");
@@ -264,25 +286,120 @@ program
 external_declaration_list
     : external_declaration
     |
-    external_declaration_list external_declaration
+external_declaration_list external_declaration
     ;
 
 external_declaration
     : declaration
     |
-    function_definition
+function_definition
     | struct_declaration
     | union_declaration
     | enum_declaration
     |
-    typedef_declaration
+typedef_declaration
+    | class_declaration
     ;
+
+class_declaration
+    : CLASS identifier LBRACE member_declaration_list RBRACE SEMICOLON
+    {
+        std::string class_name = std::string($2);
+        if (lookup_type(class_name)) {
+            yyerror(("Redefinition of class '" + class_name + "'").c_str());
+        } else {
+            Type* class_type = new Type(class_name, TK_CLASS);
+            std::vector<MemberDef*>* member_defs = $4;
+            for (MemberDef* member_def : *member_defs) {
+                if (class_type->members.count(member_def->name)) {
+                    yyerror(("Redeclaration of member '" + member_def->name + "'").c_str());
+                } else {
+                    Symbol* member_sym = new Symbol();
+                    member_sym->name = member_def->name;
+                    member_sym->type = member_def->type;
+                    member_sym->kind = member_def->kind;
+                    member_sym->access = member_def->access;
+                    class_type->members[member_def->name] = member_sym;
+                }
+                delete member_def;
+            }
+            delete member_defs;
+            install_type(class_name, class_type);
+        }
+        free($2);
+    }
+    ;
+
+member_declaration_list
+    : { $$ = new std::vector<MemberDef*>(); }
+    | member_declaration_list member_declaration { if($2) $1->push_back($2); $$ = $1; }
+    | member_declaration_list access_specifier ':' { g_current_access_specifier = $2; $$ = $1; }
+    ;
+
+access_specifier
+    : PUBLIC    { $$ = AS_PUBLIC; }
+    | PRIVATE   { $$ = AS_PRIVATE; }
+    | PROTECTED { $$ = AS_PROTECTED; }
+    ;
+
+member_declaration
+    : declaration_specifiers init_declarator_list SEMICOLON
+    {
+        Type* base_type = $1;
+        vector<Symbol*>* symbols = $2;
+        if (base_type && symbols && !symbols->empty()) {
+            Symbol* sym = (*symbols)[0]; // Simplified for one member per line
+            MemberDef* member = new MemberDef();
+            member->name = sym->name;
+            member->type = new Type(*base_type); // Copy base type properties
+            // Merge declarator properties (like pointers)
+            member->type->pointer_level = sym->type->pointer_level;
+            member->type->array_dimensions = sym->type->array_dimensions;
+            member->access = g_current_access_specifier;
+            member->kind = SK_VARIABLE;
+            $$ = member;
+
+            for(auto s : *symbols) delete s;
+            delete symbols;
+            delete base_type;
+        } else {
+            $$ = nullptr;
+            delete base_type;
+            delete symbols;
+        }
+    }
+    |
+declaration_specifiers declarator compound_statement {
+        MemberDef* member = new MemberDef();
+        Symbol* func_sym = $2;
+        Type* return_type = $1;
+        
+        func_sym->kind = SK_FUNCTION;
+        func_sym->type->kind = TK_FUNCTION;
+        func_sym->type->return_type = return_type;
+if (g_current_param_list) {
+            for (Symbol* p : *g_current_param_list) {
+                func_sym->type->parameter_types.push_back(p->type);
+            }
+        }
+
+        member->name = func_sym->name;
+        member->type = func_sym->type;
+        member->access = g_current_access_specifier;
+        member->kind = SK_FUNCTION;
+        $$ = member;
+
+        delete g_current_param_list;
+g_current_param_list = nullptr;
+    }
+    ;
+
 
 enum_declaration
     : ENUM identifier LBRACE enumerator_list RBRACE SEMICOLON
     {
         string name = string($2);
-        Type* new_type = new Type(name, TK_ENUM);
+Type* new_type = new Type(name, TK_ENUM);
         install_type(name, new_type);
         free($2);
     }
@@ -290,18 +407,18 @@ enum_declaration
 enumerator_list
     : enumerator { $$= new vector<Symbol*>(); $$->push_back($1); }
     |
-    enumerator_list COMMA enumerator { $1->push_back($3); $$ = $1; }
+enumerator_list COMMA enumerator { $1->push_back($3); $$ = $1; }
     ;
 enumerator
     : identifier {
         Symbol* sym = new Symbol();
-        sym->name = string($1);
+sym->name = string($1);
         sym->type = new Type("int", TK_BASE);
         sym->kind = SK_ENUM_CONSTANT;
         sym->dval = 0;
-        // You might want to track the actual enum value
+// You might want to track the actual enum value
         install_symbol(sym);
-        $$ = sym;
+$$ = sym;
         free($1);
     }
     ;
@@ -309,20 +426,20 @@ function_definition
     : declaration_specifiers declarator
       {
           g_labels.clear();
-          g_unresolved_gotos.clear();
+g_unresolved_gotos.clear();
           Symbol* func_sym = $2;
           Type* return_type = $1;
 
           func_sym->kind = SK_FUNCTION;
           func_sym->type->kind = TK_FUNCTION;
           func_sym->type->return_type = return_type;
-          if (g_current_param_list) {
+if (g_current_param_list) {
               for (Symbol* p : *g_current_param_list) {
                   func_sym->type->parameter_types.push_back(p->type);
               }
           }
           install_symbol(func_sym);
-          g_current_function = func_sym;
+g_current_function = func_sym;
           enter_scope();
           if (g_current_param_list) {
               for (Symbol* p : *g_current_param_list) {
@@ -343,7 +460,7 @@ function_definition
               }
           }
           g_current_function = nullptr;
-          exit_scope();
+exit_scope();
       }
     ;
 
@@ -351,16 +468,17 @@ declaration
     : declaration_specifiers init_declarator_list SEMICOLON
     {
         g_current_base_type = $1;
-        vector<Symbol*>* symbols = $2;
+vector<Symbol*>* symbols = $2;
         if (g_current_base_type && symbols) {
             for (Symbol* sym : *symbols) {
                 // If the base type was NOT auto, we need to merge the base type info now.
-                // If it WAS auto, the type was already fully resolved in init_declarator.
-                if (g_current_base_type->base_type != "auto") {
+// If it WAS auto, the type was already fully resolved in init_declarator.
+if (g_current_base_type->base_type != "auto") {
                     sym->type->base_type = g_current_base_type->base_type;
-                    sym->type->kind = g_current_base_type->kind;
+sym->type->kind = g_current_base_type->kind;
                     sym->type->is_const = g_current_base_type->is_const || sym->type->is_const;
-                    if (g_current_base_type->kind == TK_STRUCT || g_current_base_type->kind == TK_UNION) {
+                    sym->type->is_unsigned = g_current_base_type->is_unsigned;
+                    if (g_current_base_type->kind == TK_STRUCT || g_current_base_type->kind == TK_UNION || g_current_base_type->kind == TK_CLASS) {
                         sym->type->members = g_current_base_type->members;
                     }
                 }
@@ -368,25 +486,32 @@ declaration
             }
         }
         delete g_current_base_type;
-        g_current_base_type = nullptr;
+g_current_base_type = nullptr;
         delete symbols;
     }
     | declaration_specifiers SEMICOLON { delete $1; }
     ;
+
 declaration_specifiers
     : storage_class_specifier declaration_specifiers { $$ = $2; }
     |
-    type_qualifier declaration_specifiers { if($2) $2->is_const = true; $$ = $2; }
-    | type_specifier { $$ = $1;
+type_qualifier declaration_specifiers { 
+        if ($2) {
+            if ($1->is_const) $2->is_const = true;
+            if ($1->is_unsigned) $2->is_unsigned = true;
+        }
+        delete $1;
+        $$ = $2; 
     }
+    | type_specifier { $$ = $1; }
     ;
 
 storage_class_specifier: STATIC | EXTERN;
-type_qualifier: CONST;
+type_qualifier: CONST { $$ = new Type(); $$->is_const = true; } | UNSIGNED { $$ = new Type(); $$->is_unsigned = true; };
 init_declarator_list
     : init_declarator { $$= new vector<Symbol*>(); $$->push_back($1); }
     |
-    init_declarator_list COMMA init_declarator { $1->push_back($3); $$ = $1; }
+init_declarator_list COMMA init_declarator { $1->push_back($3); $$ = $1; }
     ;
 init_declarator
     : declarator {
@@ -396,21 +521,21 @@ init_declarator
         $$ = $1;
     }
     |
-    declarator ASSIGN assignment_expression {
+declarator ASSIGN assignment_expression {
         Symbol* sym = $1;
         ExprResult* expr = $3;
-        sym->dval = expr->dval;
+sym->dval = expr->dval;
 
         if (g_current_base_type && g_current_base_type->base_type == "auto") {
             // Type deduction for auto.
-            // The declarator part (e.g., *) is already in sym->type.
+// The declarator part (e.g., *) is already in sym->type.
             // We compose it with the expression's type.
-            sym->type->base_type = expr->type->base_type;
+sym->type->base_type = expr->type->base_type;
             sym->type->kind = expr->type->kind;
             sym->type->members = expr->type->members;
             sym->type->is_const = g_current_base_type->is_const || sym->type->is_const;
             sym->type->pointer_level += expr->type->pointer_level;
-            sym->type->array_dimensions.insert(sym->type->array_dimensions.end(),
+sym->type->array_dimensions.insert(sym->type->array_dimensions.end(),
                                                expr->type->array_dimensions.begin(),
                                                expr->type->array_dimensions.end());
         }
@@ -418,12 +543,13 @@ init_declarator
         delete expr;
         $$ = sym;
     }
-    | declarator ASSIGN initializer_list {
+    |
+declarator ASSIGN initializer_list {
         Symbol* sym = $1;
         std::vector<InitializerItem*>* initializers = $3;
-        if (!sym->type->array_dimensions.empty()) {
+if (!sym->type->array_dimensions.empty()) {
             int array_size = sym->type->array_dimensions[0];
-            if (array_size >= 0 && initializers->size() > (size_t)array_size) {
+if (array_size >= 0 && initializers->size() > (size_t)array_size) {
                 yyerror(("too many initializers for array of size " + to_string(array_size)).c_str());
             }
         }
@@ -437,17 +563,17 @@ init_declarator
 declarator
     : direct_declarator { $$ = $1; }
     |
-    '*' declarator { 
+'*' declarator { 
         $2->type->pointer_level++; 
         $$ = $2; 
     }
     |
-    declarator LPAREN parameter_list RPAREN {
+declarator LPAREN parameter_list RPAREN {
         // Function pointer declaration: int (*func)(int, int)
         if ($1->type->pointer_level > 0) {
             // This is a function pointer
             $1->type->kind = TK_FUNCTION;
-            $1->type->return_type = new Type(*$1->type);
+$1->type->return_type = new Type(*$1->type);
             $1->type->return_type->pointer_level--;
             $1->type->base_type = $1->type->return_type->base_type;
             
@@ -462,30 +588,30 @@ declarator
         } else {
             // Regular function declaration
             $$ = $1;
-            g_current_param_list = $3;
+g_current_param_list = $3;
         }
     }
     |
-    declarator LPAREN RPAREN {
+declarator LPAREN RPAREN {
         // Function pointer with no parameters: int (*func)()
         if ($1->type->pointer_level > 0) {
             // This is a function pointer
             $1->type->kind = TK_FUNCTION;
-            $1->type->return_type = new Type(*$1->type);
+$1->type->return_type = new Type(*$1->type);
             $1->type->return_type->pointer_level--;
             $1->type->base_type = $1->type->return_type->base_type;
             $$ = $1;
         } else {
             // Regular function declaration
             $$ = $1;
-            g_current_param_list = nullptr;
+g_current_param_list = nullptr;
         }
     }
     ;
 direct_declarator
     : identifier {
         $$ = new Symbol();
-        $$->name = string($1);
+$$->name = string($1);
         $$->type = new Type();
         $$->kind = SK_VARIABLE;
         $$->dval = 0;
@@ -494,16 +620,16 @@ direct_declarator
     }
     | LPAREN declarator RPAREN { $$ = $2; }
     |
-    direct_declarator LPAREN parameter_list RPAREN {
+direct_declarator LPAREN parameter_list RPAREN {
         $$ = $1;
         g_current_param_list = $3;
     }
     | direct_declarator LPAREN RPAREN { $$ = $1; g_current_param_list = nullptr; }
     |
-    direct_declarator LBRACKET expression_opt RBRACKET {
+direct_declarator LBRACKET expression_opt RBRACKET {
         $$ = $1;
         int dim_size = -1;
-        if ($3) {
+if ($3) {
             if (!$3->is_const_expr) {
                 yyerror("Array dimension must be a constant expression");
             }
@@ -517,7 +643,7 @@ struct_declaration
     : STRUCT identifier LBRACE struct_declaration_list RBRACE SEMICOLON
     {
         string name = string($2);
-        Type* new_type = new Type(name, TK_STRUCT);
+Type* new_type = new Type(name, TK_STRUCT);
         // Store the member declarations in the type
         for (Symbol* member : *$4) {
             new_type->members[member->name] = member;
@@ -527,10 +653,10 @@ struct_declaration
         delete $4;
     }
     |
-    STRUCT identifier SEMICOLON
+STRUCT identifier SEMICOLON
     {
         // Forward declaration: struct name;
-        string name = string($2);
+string name = string($2);
         Type* new_type = new Type(name, TK_STRUCT);
         install_type(name, new_type);
         free($2);
@@ -540,7 +666,7 @@ union_declaration
     : UNION identifier LBRACE struct_declaration_list RBRACE SEMICOLON
     {
         string name = string($2);
-        Type* new_type = new Type(name, TK_UNION);
+Type* new_type = new Type(name, TK_UNION);
         // Store the member declarations in the type
         for (Symbol* member : *$4) {
             new_type->members[member->name] = member;
@@ -550,10 +676,10 @@ union_declaration
         delete $4;
     }
     |
-    UNION identifier SEMICOLON
+UNION identifier SEMICOLON
     {
         // Forward declaration: union name;
-        string name = string($2);
+string name = string($2);
         Type* new_type = new Type(name, TK_UNION);
         install_type(name, new_type);
         free($2);
@@ -563,11 +689,12 @@ typedef_declaration
     : TYPEDEF declaration_specifiers declarator SEMICOLON
     {
         Type* base_type = $2;
-        Symbol* sym = $3;
+Symbol* sym = $3;
         if (base_type && sym) {
             sym->kind = SK_TYPEDEF_NAME;
-            sym->type->base_type = base_type->base_type;
+sym->type->base_type = base_type->base_type;
             sym->type->is_const = base_type->is_const;
+            sym->type->is_unsigned = base_type->is_unsigned;
             install_symbol(sym);
             type_table[sym->name] = sym->type;
         }
@@ -576,25 +703,25 @@ typedef_declaration
     | TYPEDEF struct_or_union_specifier identifier SEMICOLON
     {
         Type* struct_type = $2;
-        string name = string($3);
+string name = string($3);
         Symbol* sym = new Symbol();
         sym->name = name;
         sym->type = struct_type;
         sym->kind = SK_TYPEDEF_NAME;
         install_symbol(sym);
-        type_table[name] = struct_type;
+type_table[name] = struct_type;
         free($3);
     }
     | TYPEDEF enum_specifier identifier SEMICOLON
     {
         Type* enum_type = $2;
-        string name = string($3);
+string name = string($3);
         Symbol* sym = new Symbol();
         sym->name = name;
         sym->type = enum_type;
         sym->kind = SK_TYPEDEF_NAME;
         install_symbol(sym);
-        type_table[name] = enum_type;
+type_table[name] = enum_type;
         free($3);
     }
     ;
@@ -602,27 +729,27 @@ declaration_list: declaration | declaration_list declaration;
 struct_declaration_list
     : struct_declaration_item { $$= new vector<Symbol*>(); $$->push_back($1); }
     | struct_declaration_list struct_declaration_item { $1->push_back($2);
-    $$ = $1; }
+$$ = $1; }
     ;
 
 struct_declaration_item
     : declaration_specifiers init_declarator_list SEMICOLON
     {
         Type* base_type = $1;
-        vector<Symbol*>* symbols = $2;
+vector<Symbol*>* symbols = $2;
         if (base_type && symbols && !symbols->empty()) {
             // For struct members, we take the first declarator and use it as the member
             Symbol* member_sym = (*symbols)[0];
-            member_sym->type->base_type = base_type->base_type;
+member_sym->type->base_type = base_type->base_type;
             member_sym->type->kind = base_type->kind;
             member_sym->type->is_const = base_type->is_const || member_sym->type->is_const;
-            // If the base type is a struct or union, copy its member list.
-            if (base_type->kind == TK_STRUCT || base_type->kind == TK_UNION) {
+// If the base type is a struct or union, copy its member list.
+if (base_type->kind == TK_STRUCT || base_type->kind == TK_UNION) {
                 member_sym->type->members = base_type->members;
             }
             
             $$ = member_sym;
-            // Clean up the rest
+// Clean up the rest
             for (size_t i = 1; i < symbols->size(); ++i) {
                 delete (*symbols)[i];
             }
@@ -631,7 +758,7 @@ struct_declaration_item
         } else {
             $$ = nullptr;
             delete base_type;
-            delete symbols;
+delete symbols;
         }
     }
     ;
@@ -642,30 +769,32 @@ type_specifier
     }
     | CHAR   { $$ = new Type("char", TK_BASE); }
     |
-    INT    { $$ = new Type("int", TK_BASE); }
+INT    { $$ = new Type("int", TK_BASE); }
     |
-    FLOAT  { $$ = new Type("float", TK_BASE); }
+FLOAT  { $$ = new Type("float", TK_BASE); }
     | DOUBLE { $$ = new Type("double", TK_BASE);
     }
     | BOOL   { $$ = new Type("bool", TK_BASE); }
-    | AUTO   { $$ = new Type("auto", TK_BASE); }
     |
-    struct_or_union_specifier { $$ = $1; }
+AUTO   { $$ = new Type("auto", TK_BASE); }
+    |
+    struct_or_union_specifier { $$ = $1;
+    }
     | enum_specifier { $$ = $1; }
     |
-    identifier {
+identifier {
         string name = string($1);
         Symbol* sym = lookup_symbol(name);
-        if (sym && sym->kind == SK_TYPEDEF_NAME) {
+if (sym && sym->kind == SK_TYPEDEF_NAME) {
             $$ = new Type(*sym->type);
         } else {
             Type* t = lookup_type(name);
-            if (t) {
+if (t) {
                 $$ = new Type(*t);
-                // Copy the complete type
+// Copy the complete type
             } else {
                 yyerror(("Unknown type name '" + name + "'").c_str());
-                $$ = new Type("error");
+$$ = new Type("error");
             }
         }
         free($1);
@@ -676,12 +805,12 @@ enum_specifier
     : ENUM identifier
     {
         string name = string($2);
-        Type* t = lookup_type(name);
+Type* t = lookup_type(name);
         if (t && t->kind == TK_ENUM) {
             $$ = new Type(*t);
         } else {
             yyerror(("Unknown enum type '" + name + "'").c_str());
-            $$ = new Type("error");
+$$ = new Type("error");
         }
         free($2);
     }
@@ -690,57 +819,57 @@ struct_or_union_specifier
     : STRUCT identifier
     {
         string name = string($2);
-        Type* t = lookup_type(name);
+Type* t = lookup_type(name);
         if (t && t->kind == TK_STRUCT) {
             $$ = new Type(*t);
         } else {
             // Create a new struct type
             $$ = new Type(name, TK_STRUCT);
-            install_type(name, $$);
+install_type(name, $$);
         }
         free($2);
     }
     |
-    UNION identifier
+UNION identifier
     {
         string name = string($2);
-        Type* t = lookup_type(name);
+Type* t = lookup_type(name);
         if (t && t->kind == TK_UNION) {
             $$ = new Type(*t);
         } else {
             // Create a new union type
             $$ = new Type(name, TK_UNION);
-            install_type(name, $$);
+install_type(name, $$);
         }
         free($2);
     }
     |
-    STRUCT LBRACE struct_declaration_list RBRACE
+STRUCT LBRACE struct_declaration_list RBRACE
     {
         // Anonymous struct
         $$ = new Type("", TK_STRUCT);
-        // Store the member declarations in the type
+// Store the member declarations in the type
         for (Symbol* member : *$3) {
             $$->members[member->name] = member;
         }
         delete $3;
     }
     |
-    UNION LBRACE struct_declaration_list RBRACE
+UNION LBRACE struct_declaration_list RBRACE
     {
         // Anonymous union
         $$ = new Type("", TK_UNION);
-        // Store the member declarations in the type
+// Store the member declarations in the type
         for (Symbol* member : *$3) {
             $$->members[member->name] = member;
         }
         delete $3;
     }
     |
-    STRUCT identifier LBRACE struct_declaration_list RBRACE
+STRUCT identifier LBRACE struct_declaration_list RBRACE
     {
         string name = string($2);
-        Type* new_type = new Type(name, TK_STRUCT);
+Type* new_type = new Type(name, TK_STRUCT);
         for (Symbol* member : *$4) {
             new_type->members[member->name] = member;
         }
@@ -753,7 +882,7 @@ struct_or_union_specifier
     UNION identifier LBRACE struct_declaration_list RBRACE
     {
         string name = string($2);
-        Type* new_type = new Type(name, TK_UNION);
+Type* new_type = new Type(name, TK_UNION);
         for (Symbol* member : *$4) {
             new_type->members[member->name] = member;
         }
@@ -764,34 +893,38 @@ struct_or_union_specifier
     }
     ;
 compound_statement
-    : LBRACE { enter_scope(); } statement_list RBRACE { exit_scope(); }
+    : LBRACE { enter_scope(); } statement_list RBRACE { exit_scope();
+    }
     |
     LBRACE { enter_scope(); } RBRACE { exit_scope(); }
     ;
 
 statement_list: statement |
-    statement_list statement;
+statement_list statement;
 statement
     : expression_statement
     | compound_statement
-    | selection_statement
+    |
+selection_statement
     |
     iteration_statement
     | jump_statement
     | declaration
-    | labeled_statement
+    |
+labeled_statement
     ;
 expression_statement: expression_opt SEMICOLON;
 
 expression_opt
-    : expression { $$ = $1; }
+    : expression { $$ = $1;
+    }
     |
     /* empty */ { $$ = nullptr; }
     ;
 selection_statement
     : IF LPAREN expression RPAREN statement %prec IF_WITHOUT_ELSE
     |
-    IF LPAREN expression RPAREN statement ELSE statement
+IF LPAREN expression RPAREN statement ELSE statement
     | SWITCH LPAREN expression RPAREN { g_switch_depth++;
     } statement { g_switch_depth--; }
     ;
@@ -812,7 +945,7 @@ jump_statement
             yyerror("'return' statement not in function");
         } else {
             g_current_function->has_return = true;
-            Type* func_return_type = g_current_function->type->return_type;
+Type* func_return_type = g_current_function->type->return_type;
             ExprResult* return_expr = $2;
 
             if (return_expr) {
@@ -830,16 +963,16 @@ jump_statement
         }
     }
     |
-    BREAK SEMICOLON {
+BREAK SEMICOLON {
         if (g_loop_depth == 0 && g_switch_depth == 0) {
             yyerror("'break' statement not in loop or switch statement");
         }
     }
     | CONTINUE SEMICOLON
     |
-    GOTO identifier SEMICOLON {
+GOTO identifier SEMICOLON {
         string label_name = string($2);
-        if (g_labels.find(label_name) == g_labels.end()) {
+if (g_labels.find(label_name) == g_labels.end()) {
             g_unresolved_gotos.push_back(label_name);
         }
         free($2);
@@ -848,7 +981,7 @@ jump_statement
 labeled_statement
     : identifier ':' statement {
         string label_name = string($1);
-        if (g_labels.count(label_name)) {
+if (g_labels.count(label_name)) {
             yyerror(("redefinition of label '" + label_name + "'").c_str());
         } else {
             g_labels[label_name] = true;
@@ -856,7 +989,7 @@ labeled_statement
         free($1);
     }
     |
-    CASE conditional_expression ':' statement {
+CASE conditional_expression ':' statement {
         if (g_switch_depth == 0) {
             yyerror("'case' label not within a switch statement");
         }
@@ -866,7 +999,7 @@ labeled_statement
         delete $2;
     }
     |
-    DEFAULT ':' statement {
+DEFAULT ':' statement {
         if (g_switch_depth == 0) {
             yyerror("'default' label not within a switch statement");
         }
@@ -881,45 +1014,45 @@ expression
 assignment_expression
     : conditional_expression { $$ = $1; }
     |
-    unary_expression ASSIGN assignment_expression {
+unary_expression ASSIGN assignment_expression {
     ExprResult* lhs = $1;
     ExprResult* rhs = $3;
-    if (!lhs->lvalue_symbol) {
+if (!lhs->lvalue_symbol) {
         yyerror("lvalue required as left operand of assignment");
-        $$ = new ExprResult(0.0, nullptr, nullptr);
+$$ = new ExprResult(0.0, nullptr, nullptr);
     } else if (!lhs->type->array_dimensions.empty()) {
         yyerror("assignment to array type");
-        $$ = new ExprResult(0.0, nullptr, nullptr);
+$$ = new ExprResult(0.0, nullptr, nullptr);
     } else {
         lhs->lvalue_symbol->dval = rhs->dval;
-        $$ = new ExprResult(rhs->dval, rhs->type, nullptr);
+$$ = new ExprResult(rhs->dval, rhs->type, nullptr);
     }
     delete lhs;
     delete rhs;
 }
     |
-    unary_expression ADD_ASSIGN assignment_expression {
+unary_expression ADD_ASSIGN assignment_expression {
         ExprResult* lhs = $1;
         ExprResult* rhs = $3;
-        if (!lhs->lvalue_symbol) {
+if (!lhs->lvalue_symbol) {
             yyerror("lvalue required as left operand of assignment");
-            $$ = new ExprResult(0.0, nullptr, nullptr);
+$$ = new ExprResult(0.0, nullptr, nullptr);
         } else {
             lhs->lvalue_symbol->dval += rhs->dval;
-            $$ = new ExprResult(lhs->lvalue_symbol->dval, lhs->type, nullptr);
+$$ = new ExprResult(lhs->lvalue_symbol->dval, lhs->type, nullptr);
         }
         delete lhs;
         delete rhs;
     }
     | unary_expression SUB_ASSIGN assignment_expression {
         ExprResult* lhs = $1;
-        ExprResult* rhs = $3;
+ExprResult* rhs = $3;
         if (!lhs->lvalue_symbol) {
             yyerror("lvalue required as left operand of assignment");
-            $$ = new ExprResult(0.0, nullptr, nullptr);
+$$ = new ExprResult(0.0, nullptr, nullptr);
         } else {
             lhs->lvalue_symbol->dval -= rhs->dval;
-            $$ = new ExprResult(lhs->lvalue_symbol->dval, lhs->type, nullptr);
+$$ = new ExprResult(lhs->lvalue_symbol->dval, lhs->type, nullptr);
         }
         delete lhs;
         delete rhs;
@@ -951,7 +1084,6 @@ assignment_expression
         delete rhs;
     }
     ;
-
 conditional_expression
     : logical_or_expression { $$ = $1; }
     |
@@ -964,78 +1096,130 @@ conditional_expression
 logical_or_expression
     : logical_and_expression { $$ = $1; }
     |
-    logical_or_expression OR_OP logical_and_expression { $$ = new ExprResult($1->dval || $3->dval, new Type("bool")); delete $1; delete $3;
+    logical_or_expression OR_OP logical_and_expression {
+        $$ = new ExprResult($1->dval || $3->dval, new Type("bool"));
+        delete $1;
+        delete $3;
     }
     ;
-
 logical_and_expression
     : bitwise_or_expression { $$ = $1; }
     |
-    logical_and_expression AND_OP bitwise_or_expression { $$ = new ExprResult($1->dval && $3->dval, new Type("bool")); delete $1; delete $3;
+    logical_and_expression AND_OP bitwise_or_expression {
+        $$ = new ExprResult($1->dval && $3->dval, new Type("bool"));
+        delete $1;
+        delete $3;
     }
     ;
-
 bitwise_or_expression
     : bitwise_xor_expression { $$ = $1; }
     |
-    bitwise_or_expression '|' bitwise_xor_expression { $$ = new ExprResult((double)((long)$1->dval | (long)$3->dval), $1->type); delete $3; }
+    bitwise_or_expression '|' bitwise_xor_expression {
+        $$ = new ExprResult((double)((long)$1->dval | (long)$3->dval), $1->type);
+        delete $3;
+    }
     ;
 bitwise_xor_expression
     : bitwise_and_expression { $$ = $1; }
     |
-    bitwise_xor_expression '^' bitwise_and_expression { $$ = new ExprResult((double)((long)$1->dval ^ (long)$3->dval), $1->type); delete $3; }
+    bitwise_xor_expression '^' bitwise_and_expression {
+        $$ = new ExprResult((double)((long)$1->dval ^ (long)$3->dval), $1->type);
+        delete $3;
+    }
     ;
 bitwise_and_expression
     : equality_expression { $$ = $1; }
     |
-    bitwise_and_expression '&' equality_expression { $$ = new ExprResult((double)((long)$1->dval & (long)$3->dval), $1->type); delete $3; }
+    bitwise_and_expression '&' equality_expression {
+        $$ = new ExprResult((double)((long)$1->dval & (long)$3->dval), $1->type);
+        delete $3;
+    }
     ;
 equality_expression
     : relational_expression { $$ = $1; }
     |
-    equality_expression EQ_OP relational_expression { $$ = new ExprResult($1->dval == $3->dval, new Type("bool")); delete $1; delete $3;
+    equality_expression EQ_OP relational_expression {
+        $$ = new ExprResult($1->dval == $3->dval, new Type("bool"));
+        delete $1;
+        delete $3;
     }
-    | equality_expression NE_OP relational_expression { $$ = new ExprResult($1->dval != $3->dval, new Type("bool")); delete $1;
-    delete $3; }
+    |
+    equality_expression NE_OP relational_expression {
+        $$ = new ExprResult($1->dval != $3->dval, new Type("bool"));
+        delete $1;
+        delete $3;
+    }
     ;
-
 relational_expression
-    : shift_expression { $$ = $1;
+    : shift_expression { $$ = $1; }
+    |
+    relational_expression '<' shift_expression {
+        $$ = new ExprResult($1->dval < $3->dval, new Type("bool"));
+        delete $1;
+        delete $3;
     }
-    | relational_expression '<' shift_expression { $$ = new ExprResult($1->dval < $3->dval, new Type("bool")); delete $1;
-    delete $3; }
-    | relational_expression '>' shift_expression { $$ = new ExprResult($1->dval > $3->dval, new Type("bool"));
-    delete $1; delete $3; }
-    | relational_expression LE_OP shift_expression { $$ = new ExprResult($1->dval <= $3->dval, new Type("bool"));
-    delete $1; delete $3; }
-    | relational_expression GE_OP shift_expression { $$ = new ExprResult($1->dval >= $3->dval, new Type("bool"));
-    delete $1; delete $3; }
+    |
+    relational_expression '>' shift_expression {
+        $$ = new ExprResult($1->dval > $3->dval, new Type("bool"));
+        delete $1;
+        delete $3;
+    }
+    |
+    relational_expression LE_OP shift_expression {
+        $$ = new ExprResult($1->dval <= $3->dval, new Type("bool"));
+        delete $1;
+        delete $3;
+    }
+    |
+    relational_expression GE_OP shift_expression {
+        $$ = new ExprResult($1->dval >= $3->dval, new Type("bool"));
+        delete $1;
+        delete $3;
+    }
     ;
-
 shift_expression
-    : additive_expression { $$ = $1;
+    : additive_expression { $$ = $1; }
+    |
+    shift_expression LSHIFT_OP additive_expression {
+        $$ = new ExprResult((double)((long)$1->dval << (long)$3->dval), $1->type);
+        delete $3;
     }
-    | shift_expression LSHIFT_OP additive_expression { $$ = new ExprResult((double)((long)$1->dval << (long)$3->dval), $1->type); delete $3;
-    }
-    | shift_expression RSHIFT_OP additive_expression { $$ = new ExprResult((double)((long)$1->dval >> (long)$3->dval), $1->type); delete $3;
+    |
+    shift_expression RSHIFT_OP additive_expression {
+        $$ = new ExprResult((double)((long)$1->dval >> (long)$3->dval), $1->type);
+        delete $3;
     }
     ;
-
 additive_expression
     : multiplicative_expression { $$ = $1; }
     |
-    additive_expression '+' multiplicative_expression { $$ = new ExprResult($1->dval + $3->dval, $1->type); delete $3; }
+    additive_expression '+' multiplicative_expression {
+        $$ = new ExprResult($1->dval + $3->dval, $1->type);
+        delete $3;
+    }
     |
-    additive_expression '-' multiplicative_expression { $$ = new ExprResult($1->dval - $3->dval, $1->type); delete $3; }
+    additive_expression '-' multiplicative_expression {
+        $$ = new ExprResult($1->dval - $3->dval, $1->type);
+        delete $3;
+    }
     ;
 multiplicative_expression
     : cast_expression { $$ = $1; }
     |
-    multiplicative_expression '*' cast_expression { $$ = new ExprResult($1->dval * $3->dval, $1->type); delete $3; }
+    multiplicative_expression '*' cast_expression {
+        $$ = new ExprResult($1->dval * $3->dval, $1->type);
+        delete $3;
+    }
     |
-    multiplicative_expression '/' cast_expression { $$ = new ExprResult($1->dval / $3->dval, $1->type); delete $3; }
+    multiplicative_expression '/' cast_expression {
+        $$ = new ExprResult($1->dval / $3->dval, $1->type);
+        delete $3;
+    }
     |
-    multiplicative_expression '%' cast_expression { $$ = new ExprResult((double)((long)$1->dval % (long)$3->dval), $1->type); delete $3; }
+    multiplicative_expression '%' cast_expression {
+        $$ = new ExprResult((double)((long)$1->dval % (long)$3->dval), $1->type);
+        delete $3;
+    }
     ;
 cast_expression
     : unary_expression { $$ = $1; }
@@ -1049,266 +1233,171 @@ cast_expression
             // This might be a parenthesized expression, backtrack
             YYERROR;
         }
-      }
-    ;
-type_name: type_specifier { $$ = $1; } |
-    type_specifier abstract_declarator { $$ = $1; };
-abstract_declarator: '*' { $$ = nullptr; } |
-    '*' abstract_declarator { $$ = $2; };
-unary_expression
-    : postfix_expression { $$ = $1;
     }
+    ;
+type_name: type_specifier { $$ = $1; } | type_specifier abstract_declarator { $$ = $1; };
+abstract_declarator: '*' { $$ = nullptr; } | '*' abstract_declarator { $$ = $2; };
+
+unary_expression
+    : postfix_expression { $$ = $1; }
     | INC_OP unary_expression { $$ = $2; }
     |
-    DEC_OP unary_expression { $$ = $2; }
+DEC_OP unary_expression { $$ = $2; }
+    | '-' cast_expression %prec SIZEOF { $$ = new ExprResult(-$2->dval, $2->type); }
     |
-    '-' cast_expression %prec SIZEOF { $$ = new ExprResult(-$2->dval, $2->type); }
-    | '!'
-    cast_expression { $$ = new ExprResult(!$2->dval, new Type("bool")); delete $2; }
+'!' cast_expression { $$ = new ExprResult(!$2->dval, new Type("bool")); delete $2; }
     |
-    '&' cast_expression %prec SIZEOF {
+'&' cast_expression %prec SIZEOF {
         ExprResult* operand = $2;
         if (!operand->lvalue_symbol) {
             yyerror("lvalue required as unary '&' operand");
-            $$ = new ExprResult(0.0, new Type("error"), nullptr);
+            $$ = new ExprResult(0.0, nullptr, nullptr);
         } else {
-            Type* new_type = new Type(*operand->type);
-            new_type->pointer_level++;
-            $$ = new ExprResult(0.0, new_type, nullptr); // Result is not an l-value
+            $$ = new ExprResult(0.0, new Type(*operand->type), nullptr);
+            $$->type->pointer_level++;
         }
-        delete operand;
     }
-    | '*' cast_expression %prec SIZEOF {
-        ExprResult* operand = $2;
-        if (operand->type->pointer_level == 0 && operand->type->array_dimensions.empty()) {
-            yyerror("invalid type argument of unary '*' (have 'int')");
-            $$ = new ExprResult(0.0, new Type("error"), nullptr);
-        } else {
-            Type* new_type = new Type(*operand->type);
-            if (new_type->pointer_level > 0) {
-                new_type->pointer_level--;
-            } else { // It's an array
-                new_type->array_dimensions.erase(new_type->array_dimensions.begin());
-            }
-            // The result of dereferencing is an l-value
-            $$ = new ExprResult(operand->lvalue_symbol ? operand->lvalue_symbol->dval : 0.0, new_type, operand->lvalue_symbol);
-        }
-        delete operand;
-    }
+    | '*' cast_expression { $$ = $2; }
+    | SIZEOF unary_expression { $$ = new ExprResult(0.0, new Type("int")); delete $2; }
+    | SIZEOF LPAREN type_name RPAREN { $$ = new ExprResult(0.0, new Type("int")); delete $3; }
     ;
+
 postfix_expression
     : primary_expression { $$ = $1; }
     |
-    postfix_expression LBRACKET expression RBRACKET {
-    ExprResult* array_expr = $1;
-    ExprResult* index_expr = $3;
-    Type* new_type = nullptr;
-    Symbol* result_symbol = nullptr;
+postfix_expression LBRACKET expression RBRACKET {
+        $$ = $1;
+        delete $3;
+    }
+    |
+postfix_expression LPAREN argument_list RPAREN {
+        ExprResult* func = $1;
+        if (func->type->kind != TK_FUNCTION) {
+            yyerror("called object is not a function or function pointer");
+            $$ = new ExprResult(0.0, new Type("error"), nullptr);
+        } else {
+            // The type of the expression is the return type of the function
+            $$ = new ExprResult(0.0, new Type(*func->type->return_type), nullptr);
+        }
+        delete func;
+        if ($3) {
+            for(auto arg : *$3) delete arg;
+            delete $3;
+        }
+    }
+    |
+postfix_expression LPAREN RPAREN {
+        ExprResult* func = $1;
+        if (func->type->kind != TK_FUNCTION) {
+            yyerror("called object is not a function or function pointer");
+            $$ = new ExprResult(0.0, new Type("error"), nullptr);
+        } else {
+            // The type of the expression is the return type of the function
+            $$ = new ExprResult(0.0, new Type(*func->type->return_type), nullptr);
+        }
+        delete func;
+    }
+    |
+postfix_expression DOT identifier {
+        ExprResult* record = $1;
+        string member_name = string($3);
+        if (record->type->kind != TK_STRUCT && record->type->kind != TK_UNION && record->type->kind != TK_CLASS) {
+            yyerror("request for member in something not a structure, union, or class");
+            $$ = new ExprResult(0.0, nullptr, nullptr);
+        } else {
+            if (record->type->members.count(member_name)) {
+                Symbol* member = record->type->members.at(member_name);
 
-    if (array_expr->type->pointer_level == 0 && array_expr->type->array_dimensions.empty()) {
-        yyerror("subscripted value is neither array nor pointer");
-        new_type = new Type("error");
-    } else {
-        new_type = new Type(*array_expr->type);
-        // Handle array bounds checking for the first dimension
-        // Only check bounds in non-initializer contexts (when we have an lvalue symbol)
-        if (!new_type->array_dimensions.empty() && array_expr->lvalue_symbol) {
-            int array_size = new_type->array_dimensions[0];
-            // Check if we have a constant expression for bounds checking
-            if (index_expr->is_const_expr && array_size >= 0) {
-                int index_value = (int)index_expr->dval;
-                if (index_value < 0 || index_value >= array_size) {
-                    yyerror(("array index " + to_string(index_value) + " out of bounds [0, " + to_string(array_size - 1) + "]").c_str());
+                if (record->type->kind == TK_CLASS && member->access == AS_PRIVATE) {
+                    if (g_current_class_scope != record->type) {
+                        yyerror(("cannot access private member '" + member_name + "'").c_str());
+                    }
                 }
-            }
-        }
-        
-        // Remove the first dimension
-        if (!new_type->array_dimensions.empty()) {
-            new_type->array_dimensions.erase(new_type->array_dimensions.begin());
-        }
-        
-        // If no dimensions left and pointer level is 0, it becomes the base type (element access)
-        if (new_type->array_dimensions.empty() && new_type->pointer_level == 0) {
-            // This is now accessing an individual element - it's an lvalue
-            result_symbol = array_expr->lvalue_symbol;
-        } else {
-            // Still an array or pointer - preserve lvalue if it was one
-            result_symbol = array_expr->lvalue_symbol;
-        }
-    }
-    
-    $$ = new ExprResult(array_expr->lvalue_symbol ? array_expr->lvalue_symbol->dval : 0.0, new_type, result_symbol);
-    delete array_expr;
-    delete index_expr;
-}
-    | postfix_expression DOT identifier {
-        // Handle struct member access: obj.member
-        ExprResult* struct_expr = $1;
-        string member_name = string($3);
-        
-        if (struct_expr->type->kind != TK_STRUCT && struct_expr->type->kind != TK_UNION) {
-            yyerror("member access requires struct or union type");
-            $$ = new ExprResult(0.0, new Type("error"), nullptr);
-        } else if (struct_expr->type->pointer_level > 0) {
-            yyerror("member access requires struct/union type, not pointer to struct/union (use -> instead)");
-            $$ = new ExprResult(0.0, new Type("error"), nullptr);
-        } else {
-            // Look up the member in the struct/union
-            auto it = struct_expr->type->members.find(member_name);
-            if (it == struct_expr->type->members.end()) {
-                yyerror(("no member named '" + member_name + "' in struct/union").c_str());
-                $$ = new ExprResult(0.0, new Type("error"), nullptr);
+                
+                $$ = new ExprResult(member->dval, member->type, member);
             } else {
-                Symbol* member_sym = it->second;
-                // The result is an lvalue if the struct expression was an lvalue
-                Symbol* result_sym = struct_expr->lvalue_symbol ?
-                member_sym : nullptr;
-                $$ = new ExprResult(member_sym->dval, member_sym->type, result_sym);
+                yyerror(("no member named '" + member_name + "' in structure, union, or class").c_str());
+                $$ = new ExprResult(0.0, nullptr, nullptr);
             }
         }
-        delete struct_expr;
-        free($3);
-    }
-    | postfix_expression PTR_OP identifier {
-        // Handle struct pointer member access: ptr->member
-        ExprResult* ptr_expr = $1;
-        string member_name = string($3);
-        
-        // Check if it's a pointer to struct/union
-        if (ptr_expr->type->pointer_level == 0 || 
-            (ptr_expr->type->kind != TK_STRUCT && ptr_expr->type->kind != TK_UNION)) {
-            yyerror("pointer member access requires pointer to struct or union");
-            $$ = new ExprResult(0.0, new Type("error"), nullptr);
-        } else {
-            // Get the base type (the struct/union being pointed to)
-            Type* base_type = new Type(*ptr_expr->type);
-            base_type->pointer_level--;
-            
-            // Look up the member in the struct/union
-            auto it = base_type->members.find(member_name);
-            if (it == base_type->members.end()) {
-                yyerror(("no member named '" + member_name + "' in struct/union").c_str());
-                $$ = new ExprResult(0.0, new Type("error"), nullptr);
-            } else {
-                Symbol* member_sym = it->second;
-                // ptr->member is equivalent to (*ptr).member, so it's an lvalue
-                $$ = new ExprResult(member_sym->dval, member_sym->type, member_sym);
-            }
-            delete base_type;
-        }
-        delete ptr_expr;
+        delete record;
         free($3);
     }
     |
-    postfix_expression LPAREN argument_list RPAREN {
-        ExprResult* func_expr = $1;
-        vector<ExprResult*>* args = $3;
-        // Check if this is a function call (regular function or function pointer)
-        if (func_expr->type->kind == TK_FUNCTION) {
-            // Regular function call
-            Symbol* func_sym = lookup_symbol(func_expr->lvalue_symbol->name);
-            if (!func_sym || func_sym->kind != SK_FUNCTION) {
-                yyerror(("'" + func_expr->lvalue_symbol->name + "' is not a function").c_str());
-            } else {
-                vector<Type*>& param_types = func_sym->type->parameter_types;
-                if (args->size() != param_types.size()) {
-                    yyerror(("Wrong number of arguments to function '" + func_sym->name + "'").c_str());
-                } else {
-                    for (size_t i = 0; i < args->size(); ++i) {
-                        if ((*args)[i]->type->base_type != param_types[i]->base_type) {
-                            yyerror(("Type mismatch for argument " + to_string(i+1) + " in call to '" 
-                                + func_sym->name + "'").c_str());
-                        }
+postfix_expression PTR_OP identifier {
+        ExprResult* record_ptr = $1;
+        string member_name = string($3);
+        if (record_ptr->type->pointer_level == 0 || (record_ptr->type->kind != TK_STRUCT && record_ptr->type->kind != TK_UNION && record_ptr->type->kind != TK_CLASS)) {
+            yyerror("request for member in something not a pointer to a structure, union, or class");
+            $$ = new ExprResult(0.0, nullptr, nullptr);
+        } else {
+            if (record_ptr->type->members.count(member_name)) {
+                Symbol* member = record_ptr->type->members.at(member_name);
+
+                 if (record_ptr->type->kind == TK_CLASS && member->access == AS_PRIVATE) {
+                    if (g_current_class_scope != record_ptr->type) {
+                        yyerror(("cannot access private member '" + member_name + "'").c_str());
                     }
                 }
-            }
-            for(auto arg: *args) delete arg;
-            delete args;
-            $$ = new ExprResult(0.0, func_sym->type->return_type, nullptr);
-        } else if (func_expr->type->pointer_level > 0 && func_expr->type->kind == TK_FUNCTION) {
-            // Function pointer call
-            Type* func_ptr_type = func_expr->type;
-            vector<Type*>& param_types = func_ptr_type->parameter_types;
-            
-            if (args->size() != param_types.size()) {
-                yyerror("Wrong number of arguments to function pointer");
+
+                $$ = new ExprResult(member->dval, member->type, member);
             } else {
-                for (size_t i = 0; i < args->size(); ++i) {
-                    if ((*args)[i]->type->base_type != param_types[i]->base_type) {
-                        yyerror(("Type mismatch for argument " + to_string(i+1) + " in function pointer call").c_str());
-                    }
-                }
+                yyerror(("no member named '" + member_name + "' in structure, union, or class").c_str());
+                $$ = new ExprResult(0.0, nullptr, nullptr);
             }
-            for(auto arg: *args) delete arg;
-            delete args;
-            $$ = new ExprResult(0.0, func_ptr_type->return_type, nullptr);
-        } else {
-            yyerror("called object is not a function or function pointer");
-            for(auto arg: *args) delete arg;
-            delete args;
-            $$ = new ExprResult(0.0, new Type("error"), nullptr);
         }
-        delete func_expr;
-      }
-    |
-    postfix_expression LPAREN RPAREN {
-        ExprResult* func_expr = $1;
-        // Check if this is a function call (regular function or function pointer)
-        if (func_expr->type->kind == TK_FUNCTION) {
-            // Regular function call
-            Symbol* func_sym = lookup_symbol(func_expr->lvalue_symbol->name);
-            if (!func_sym || func_sym->kind != SK_FUNCTION) {
-                yyerror(("'" + func_expr->lvalue_symbol->name + "' is not a function").c_str());
-            } else {
-                if (func_sym->type->parameter_types.size() != 0) {
-                    yyerror(("Wrong number of arguments to function '" + func_sym->name + "'").c_str());
-                }
-            }
-            $$ = new ExprResult(0.0, func_sym->type->return_type, nullptr);
-        } else if (func_expr->type->pointer_level > 0 && func_expr->type->kind == TK_FUNCTION) {
-            // Function pointer call with no arguments
-            Type* func_ptr_type = func_expr->type;
-            if (func_ptr_type->parameter_types.size() != 0) {
-                yyerror("Wrong number of arguments to function pointer");
-            }
-            $$ = new ExprResult(0.0, func_ptr_type->return_type, nullptr);
-        } else {
-            yyerror("called object is not a function or function pointer");
-            $$ = new ExprResult(0.0, new Type("error"), nullptr);
-        }
-        delete func_expr;
+        delete record_ptr;
+        free($3);
     }
-    | postfix_expression INC_OP { $$ = $1; }
     |
-    postfix_expression DEC_OP { $$ = $1; }
+postfix_expression INC_OP { $$ = $1; }
+    |
+postfix_expression DEC_OP { $$ = $1; }
     ;
 primary_expression
     : identifier {
-        Symbol* sym = lookup_symbol($1);
-        if (!sym) {
-            yyerror(("Undeclared identifier '" + string($1) + "'").c_str());
-            $$ = new ExprResult(0, new Type("error"), nullptr);
-        } else {
+        string name = string($1);
+        Symbol* sym = lookup_symbol(name);
+        if (sym) {
             $$ = new ExprResult(sym->dval, sym->type, sym);
+        } else {
+            yyerror(("undeclared identifier '" + name + "'").c_str());
+            $$ = new ExprResult(0.0, new Type("error"), nullptr);
         }
         free($1);
     }
+    | INT_LITERAL { $$ = new ExprResult($1, new Type("int")); $$->is_const_expr = true; }
     |
-    INT_LITERAL    { $$= new ExprResult($1, new Type("int"), nullptr); $$->is_const_expr = true; }
+FLOAT_LITERAL { $$ = new ExprResult($1, new Type("float")); $$->is_const_expr = true; }
     |
-    FLOAT_LITERAL  { $$= new ExprResult($1, new Type("float"), nullptr); $$->is_const_expr = true; }
+STRING_LITERAL { $$ = new ExprResult(0.0, new Type("char*")); }
     |
-    CHAR_LITERAL   { $$= new ExprResult(0, new Type("char"), nullptr); $$->is_const_expr = true; }
+CHAR_LITERAL { $$ = new ExprResult(0.0, new Type("char")); $$->is_const_expr = true; }
     |
-    STRING_LITERAL { $$ = new ExprResult(0, new Type("char*"), nullptr); }
+LPAREN expression RPAREN { $$ = $2; }
     |
-    LPAREN expression RPAREN { $$ = $2; }
+identifier COLON_COLON identifier {
+        string class_name = string($1);
+        string member_name = string($3);
+        Type* class_type = lookup_type(class_name);
+        if (!class_type) {
+            yyerror(("unknown type name '" + class_name + "'").c_str());
+            $$ = new ExprResult(0.0, new Type("error"), nullptr);
+        } else if (class_type->members.count(member_name)) {
+            Symbol* member = class_type->members.at(member_name);
+            $$ = new ExprResult(member->dval, member->type, member);
+        } else {
+            yyerror(("no member named '" + member_name + "' in '" + class_name + "'").c_str());
+            $$ = new ExprResult(0.0, new Type("error"), nullptr);
+        }
+        free($1);
+        free($3);
+    }
     ;
 parameter_list
-    : parameter_declaration { $$= new vector<Symbol*>(); $$->push_back($1); }
+    : parameter_declaration { $$ = new vector<Symbol*>(); $$->push_back($1); }
     |
-    parameter_list COMMA parameter_declaration { $1->push_back($3); $$ = $1; }
+parameter_list COMMA parameter_declaration { $1->push_back($3); $$ = $1; }
     ;
 parameter_declaration
     : declaration_specifiers declarator {
@@ -1318,7 +1407,8 @@ parameter_declaration
         sym->type->base_type = base_type->base_type;
         sym->type->kind = base_type->kind;
         sym->type->is_const = base_type->is_const || sym->type->is_const;
-        if (base_type->kind == TK_STRUCT || base_type->kind == TK_UNION) {
+        sym->type->is_unsigned = base_type->is_unsigned;
+        if (base_type->kind == TK_STRUCT || base_type->kind == TK_UNION || base_type->kind == TK_CLASS) {
             sym->type->members = base_type->members;
         }
         delete base_type;
@@ -1332,8 +1422,8 @@ argument_list
     ;
 initializer_list
     : LBRACE initializer_items RBRACE { $$ = $2; }
-    |
-    LBRACE RBRACE { $$ = new std::vector<InitializerItem*>(); }
+    | LBRACE RBRACE { $$ = new std::vector<InitializerItem*>(); }
+    | LBRACE initializer_items COMMA RBRACE { $$ = $2; }
     ;
 initializer_items
     : initializer { $$= new std::vector<InitializerItem*>(); $$->push_back($1); }
@@ -1345,6 +1435,7 @@ initializer
     |
     initializer_list { $$ = new InitializerItem($1); }
     ;
+
 %%
 
 int main(int argc, char** argv) {
