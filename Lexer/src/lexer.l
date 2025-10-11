@@ -13,11 +13,21 @@ using namespace std;
 
 %option noyywrap yylineno 
 %x STRING
+%x COMMENT
 
 %%
 
 \n { line++; }
 [ \t]+ {}
+
+"//".* {}
+"/*"                    BEGIN(COMMENT);
+<COMMENT>{
+"*/"                    BEGIN(INITIAL);
+\n                      { line++; }
+.                       {}
+}
+
 "if" { return IF; }
 "else" { return ELSE; }
 "for" { return FOR; }
