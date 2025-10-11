@@ -7,6 +7,8 @@
 
     struct Type;
     struct Symbol;
+    struct ExprResult;
+    struct InitializerItem;
 
     struct ExprResult {
         double dval;
@@ -16,10 +18,31 @@
         ExprResult(double v = 0.0, Type* t = nullptr, Symbol* s = nullptr)
             : dval(v), type(t), lvalue_symbol(s), is_const_expr(false) {}
     };
+    
+    struct InitializerItem {
+        bool is_list;
+        ExprResult* expr;
+        std::vector<InitializerItem*>* list;
+
+        InitializerItem(ExprResult* e = nullptr) : is_list(false), expr(e), list(nullptr) {}
+        InitializerItem(std::vector<InitializerItem*>* l) : is_list(true), expr(nullptr), list(l) {}
+
+        ~InitializerItem() {
+            if (is_list) {
+                if (list) {
+                    for (auto item : *list) {
+                        delete item;
+                    }
+                    delete list;
+                }
+            } else {
+                delete expr;
+            }
+        }
+    };
 
     enum TypeKind { TK_BASE, TK_STRUCT, TK_CLASS, TK_UNION, TK_ENUM, TK_FUNCTION };
     enum SymbolKind { SK_VARIABLE, SK_TYPEDEF_NAME, SK_FUNCTION, SK_ENUM_CONSTANT };
-
     struct Type {
         TypeKind kind;
         std::string base_type;
@@ -60,7 +83,6 @@ extern int yylineno;
 extern char* yytext;
 extern FILE* yyin;
 void yyerror(const char* s);
-
 Type::Type(string base, TypeKind k) : kind(k), base_type(base), is_const(false), pointer_level(0), return_type(nullptr) {}
 
 Type::~Type() {
@@ -95,7 +117,8 @@ vector<Symbol*>* g_current_param_list = nullptr;
 bool g_allow_initializers = false;
 
 void enter_scope() { symbol_table.push(map<string, Symbol*>()); }
-void exit_scope() { if (!symbol_table.empty()) symbol_table.pop(); }
+void exit_scope() { if (!symbol_table.empty()) symbol_table.pop();
+}
 
 Type* lookup_type(const string& name) {
     if (type_table.count(name)) return type_table.at(name);
@@ -158,6 +181,8 @@ void yyerror(const char* s) {
     std::vector<Symbol*>* symbol_list_ptr;
     ExprResult* expr_ptr;
     std::vector<ExprResult*>* arg_list_ptr;
+    InitializerItem* initializer_item_ptr;
+    std::vector<InitializerItem*>* initializer_item_list_ptr;
 }
 
 %type <expr_ptr> expression expression_opt assignment_expression conditional_expression logical_or_expression
@@ -171,9 +196,10 @@ void yyerror(const char* s) {
 %type <symbol_ptr> declarator direct_declarator init_declarator parameter_declaration struct_declaration_item enumerator
 %type <str> identifier
 
+%type <arg_list_ptr> argument_list
 
-%type <arg_list_ptr> argument_list initializer_list initializer_items
-
+%type <initializer_item_list_ptr> initializer_list initializer_items
+%type <initializer_item_ptr> initializer
 
 
 
@@ -200,7 +226,8 @@ void yyerror(const char* s) {
 %%
 
 program
-    : { enter_scope(); } external_declaration_list {
+    : { enter_scope();
+    } external_declaration_list {
         Symbol* main_sym = lookup_symbol("main");
         if (!main_sym || main_sym->kind != SK_FUNCTION) {
             fprintf(stderr, "Error: undefined reference to 'main'\n");
@@ -227,7 +254,7 @@ program
             }
         }
         exit_scope();
-      }
+    }
     ;
 
 external_declaration_list
@@ -253,12 +280,10 @@ enum_declaration
         free($2);
     }
     ;
-
 enumerator_list
     : enumerator { $$ = new vector<Symbol*>(); $$->push_back($1); }
     | enumerator_list COMMA enumerator { $1->push_back($3); $$ = $1; }
     ;
-
 enumerator
     : identifier {
         Symbol* sym = new Symbol();
@@ -305,7 +330,6 @@ function_definition
           exit_scope();
       }
     ;
-
 declaration
     : declaration_specifiers init_declarator_list SEMICOLON
     {
@@ -313,17 +337,18 @@ declaration
         vector<Symbol*>* symbols = $2;
         if (base_type && symbols) {
             for (Symbol* sym : *symbols) {
-                // Check if base_type is a struct/union/enum and copy the complete type
-                if (base_type->kind == TK_STRUCT || base_type->kind == TK_UNION || base_type->kind == TK_ENUM) {
+                // Correctly merge the base type information (from declaration_specifiers)
+                // into the symbol's type (which has pointer/array info from declarator),
+                // instead of replacing it.
+                sym->type->base_type = base_type->base_type;
+                sym->type->kind = base_type->kind;
+                sym->type->is_const = base_type->is_const || sym->type->is_const;
 
-                    // For struct/union/enum types, copy the entire type structure
-                    delete sym->type; // Delete the default type
-                    sym->type = new Type(*base_type); // Copy the struct/union/enum type
-                } else {
-                    // For basic types, just set the base type and properties
-                    sym->type->base_type = base_type->base_type;
-                    sym->type->is_const = base_type->is_const || sym->type->is_const;
+                // If the base type is a struct or union, copy its member list.
+                if (base_type->kind == TK_STRUCT || base_type->kind == TK_UNION) {
+                    sym->type->members = base_type->members;
                 }
+                
                 install_symbol(sym);
             }
         }
@@ -332,21 +357,19 @@ declaration
     }
     | declaration_specifiers SEMICOLON { delete $1; }
     ;
-
 declaration_specifiers
     : storage_class_specifier declaration_specifiers { $$ = $2; }
     | type_qualifier declaration_specifiers { if($2) $2->is_const = true; $$ = $2; }
-    | type_specifier { $$ = $1; }
+    | type_specifier { $$ = $1;
+    }
     ;
 
 storage_class_specifier: STATIC | EXTERN | AUTO;
 type_qualifier: CONST;
-
 init_declarator_list
     : init_declarator { $$ = new vector<Symbol*>(); $$->push_back($1); }
     | init_declarator_list COMMA init_declarator { $1->push_back($3); $$ = $1; }
     ;
-
 init_declarator
     : declarator { $$ = $1; }
     | declarator ASSIGN assignment_expression {
@@ -355,25 +378,27 @@ init_declarator
         $$ = $1;
     }
     | declarator ASSIGN initializer_list {
-        // Handle array initialization with bounds checking
-        if (!$1->type->array_dimensions.empty()) {
-            int array_size = $1->type->array_dimensions[0];
-            int initializer_count = $3->size();
-
-            if (array_size >= 0 && initializer_count > array_size) {
-                yyerror(("too many initializer values for array of size " + to_string(array_size)).c_str());
+        Symbol* sym = $1;
+        std::vector<InitializerItem*>* initializers = $3;
+        if (!sym->type->array_dimensions.empty()) {
+            int array_size = sym->type->array_dimensions[0];
+            if (array_size >= 0 && initializers->size() > (size_t)array_size) {
+                yyerror(("too many initializers for array of size " + to_string(array_size)).c_str());
             }
         }
-        delete $3;
-        $$ = $1;
+        for (auto item : *initializers) {
+            delete item;
+        }
+        delete initializers;
+        $$ = sym;
     }
     ;
 
 declarator
-    : direct_declarator { $$ = $1; }
+    : direct_declarator { $$ = $1;
+    }
     | '*' declarator { $2->type->pointer_level++; $$ = $2; }
     ;
-
 direct_declarator
     : identifier {
         $$ = new Symbol();
@@ -403,7 +428,6 @@ direct_declarator
         $$->type->array_dimensions.push_back(dim_size);
     }
     ;
-
 struct_declaration
     : STRUCT identifier LBRACE struct_declaration_list RBRACE SEMICOLON
     {
@@ -426,7 +450,6 @@ struct_declaration
         free($2);
     }
     ;
-
 union_declaration
     : UNION identifier LBRACE struct_declaration_list RBRACE SEMICOLON
     {
@@ -449,7 +472,6 @@ union_declaration
         free($2);
     }
     ;
-
 typedef_declaration
     : TYPEDEF declaration_specifiers declarator SEMICOLON
     {
@@ -504,12 +526,10 @@ typedef_declaration
     }
     ;
 declaration_list: declaration | declaration_list declaration;
-
 struct_declaration_list
     : struct_declaration_item { $$ = new vector<Symbol*>(); $$->push_back($1); }
     | struct_declaration_list struct_declaration_item { $1->push_back($2); $$ = $1; }
     ;
-
 struct_declaration_item
     : declaration_specifiers init_declarator_list SEMICOLON
     {
@@ -535,14 +555,15 @@ struct_declaration_item
     }
     ;
 struct_declaration: declaration_specifiers init_declarator_list SEMICOLON;
-
 identifier: IDENTIFIER { $$ = $1; };
 type_specifier
-    : VOID   { $$ = new Type("void", TK_BASE); }
+    : VOID   { $$ = new Type("void", TK_BASE);
+    }
     | CHAR   { $$ = new Type("char", TK_BASE); }
     | INT    { $$ = new Type("int", TK_BASE); }
     | FLOAT  { $$ = new Type("float", TK_BASE); }
-    | DOUBLE { $$ = new Type("double", TK_BASE); }
+    | DOUBLE { $$ = new Type("double", TK_BASE);
+    }
     | BOOL   { $$ = new Type("bool", TK_BASE); }
     | struct_or_union_specifier { $$ = $1; }
     | enum_specifier { $$ = $1; }
@@ -578,7 +599,6 @@ enum_specifier
         free($2);
     }
     ;
-
 struct_or_union_specifier
     : STRUCT identifier
     {
@@ -618,11 +638,13 @@ struct_or_union_specifier
     }
     ;
 compound_statement
-    : LBRACE { enter_scope(); } statement_list RBRACE { exit_scope(); }
+    : LBRACE { enter_scope(); } statement_list RBRACE { exit_scope();
+    }
     | LBRACE { enter_scope(); } RBRACE { exit_scope(); }
     ;
 
-statement_list: statement | statement_list statement;
+statement_list: statement |
+    statement_list statement;
 statement
     : expression_statement
     | compound_statement
@@ -760,47 +782,56 @@ conditional_expression
     ;
 logical_or_expression
     : logical_and_expression { $$ = $1; }
-    | logical_or_expression OR_OP logical_and_expression { $$ = new ExprResult($1->dval || $3->dval, new Type("bool")); delete $1; delete $3; }
+    | logical_or_expression OR_OP logical_and_expression { $$ = new ExprResult($1->dval || $3->dval, new Type("bool")); delete $1; delete $3;
+    }
     ;
 
 logical_and_expression
     : bitwise_or_expression { $$ = $1; }
-    | logical_and_expression AND_OP bitwise_or_expression { $$ = new ExprResult($1->dval && $3->dval, new Type("bool")); delete $1; delete $3; }
+    | logical_and_expression AND_OP bitwise_or_expression { $$ = new ExprResult($1->dval && $3->dval, new Type("bool")); delete $1; delete $3;
+    }
     ;
 
 bitwise_or_expression
     : bitwise_xor_expression { $$ = $1; }
     | bitwise_or_expression '|' bitwise_xor_expression { $$ = new ExprResult((double)((long)$1->dval | (long)$3->dval), $1->type); delete $3; }
     ;
-
 bitwise_xor_expression
     : bitwise_and_expression { $$ = $1; }
     | bitwise_xor_expression '^' bitwise_and_expression { $$ = new ExprResult((double)((long)$1->dval ^ (long)$3->dval), $1->type); delete $3; }
     ;
-
 bitwise_and_expression
     : equality_expression { $$ = $1; }
     | bitwise_and_expression '&' equality_expression { $$ = new ExprResult((double)((long)$1->dval & (long)$3->dval), $1->type); delete $3; }
     ;
-
 equality_expression
     : relational_expression { $$ = $1; }
-    | equality_expression EQ_OP relational_expression { $$ = new ExprResult($1->dval == $3->dval, new Type("bool")); delete $1; delete $3; }
-    | equality_expression NE_OP relational_expression { $$ = new ExprResult($1->dval != $3->dval, new Type("bool")); delete $1; delete $3; }
+    | equality_expression EQ_OP relational_expression { $$ = new ExprResult($1->dval == $3->dval, new Type("bool")); delete $1; delete $3;
+    }
+    | equality_expression NE_OP relational_expression { $$ = new ExprResult($1->dval != $3->dval, new Type("bool")); delete $1;
+    delete $3; }
     ;
 
 relational_expression
-    : shift_expression { $$ = $1; }
-    | relational_expression '<' shift_expression { $$ = new ExprResult($1->dval < $3->dval, new Type("bool")); delete $1; delete $3; }
-    | relational_expression '>' shift_expression { $$ = new ExprResult($1->dval > $3->dval, new Type("bool")); delete $1; delete $3; }
-    | relational_expression LE_OP shift_expression { $$ = new ExprResult($1->dval <= $3->dval, new Type("bool")); delete $1; delete $3; }
-    | relational_expression GE_OP shift_expression { $$ = new ExprResult($1->dval >= $3->dval, new Type("bool")); delete $1; delete $3; }
+    : shift_expression { $$ = $1;
+    }
+    | relational_expression '<' shift_expression { $$ = new ExprResult($1->dval < $3->dval, new Type("bool")); delete $1;
+    delete $3; }
+    | relational_expression '>' shift_expression { $$ = new ExprResult($1->dval > $3->dval, new Type("bool"));
+    delete $1; delete $3; }
+    | relational_expression LE_OP shift_expression { $$ = new ExprResult($1->dval <= $3->dval, new Type("bool"));
+    delete $1; delete $3; }
+    | relational_expression GE_OP shift_expression { $$ = new ExprResult($1->dval >= $3->dval, new Type("bool"));
+    delete $1; delete $3; }
     ;
 
 shift_expression
-    : additive_expression { $$ = $1; }
-    | shift_expression LSHIFT_OP additive_expression { $$ = new ExprResult((double)((long)$1->dval << (long)$3->dval), $1->type); delete $3; }
-    | shift_expression RSHIFT_OP additive_expression { $$ = new ExprResult((double)((long)$1->dval >> (long)$3->dval), $1->type); delete $3; }
+    : additive_expression { $$ = $1;
+    }
+    | shift_expression LSHIFT_OP additive_expression { $$ = new ExprResult((double)((long)$1->dval << (long)$3->dval), $1->type); delete $3;
+    }
+    | shift_expression RSHIFT_OP additive_expression { $$ = new ExprResult((double)((long)$1->dval >> (long)$3->dval), $1->type); delete $3;
+    }
     ;
 
 additive_expression
@@ -808,14 +839,12 @@ additive_expression
     | additive_expression '+' multiplicative_expression { $$ = new ExprResult($1->dval + $3->dval, $1->type); delete $3; }
     | additive_expression '-' multiplicative_expression { $$ = new ExprResult($1->dval - $3->dval, $1->type); delete $3; }
     ;
-
 multiplicative_expression
     : cast_expression { $$ = $1; }
     | multiplicative_expression '*' cast_expression { $$ = new ExprResult($1->dval * $3->dval, $1->type); delete $3; }
     | multiplicative_expression '/' cast_expression { $$ = new ExprResult($1->dval / $3->dval, $1->type); delete $3; }
     | multiplicative_expression '%' cast_expression { $$ = new ExprResult((double)((long)$1->dval % (long)$3->dval), $1->type); delete $3; }
     ;
-
 cast_expression
     : unary_expression { $$ = $1; }
     | LPAREN type_name RPAREN cast_expression {
@@ -829,16 +858,47 @@ cast_expression
         }
       }
     ;
-type_name: type_specifier { $$ = $1; } | type_specifier abstract_declarator { $$ = $1; };
-abstract_declarator: '*' { $$ = nullptr; } | '*' abstract_declarator { $$ = $2; };
+type_name: type_specifier { $$ = $1; } |
+    type_specifier abstract_declarator { $$ = $1; };
+abstract_declarator: '*' { $$ = nullptr; } |
+    '*' abstract_declarator { $$ = $2; };
 unary_expression
-    : postfix_expression { $$ = $1; }
+    : postfix_expression { $$ = $1;
+    }
     | INC_OP unary_expression { $$ = $2; }
     | DEC_OP unary_expression { $$ = $2; }
-    | '-' cast_expression %prec '-' { $$ = new ExprResult(-$2->dval, $2->type); }
+    | '-' cast_expression %prec SIZEOF { $$ = new ExprResult(-$2->dval, $2->type); }
     | '!' cast_expression { $$ = new ExprResult(!$2->dval, new Type("bool")); delete $2; }
+    | '&' cast_expression %prec SIZEOF {
+        ExprResult* operand = $2;
+        if (!operand->lvalue_symbol) {
+            yyerror("lvalue required as unary '&' operand");
+            $$ = new ExprResult(0.0, new Type("error"), nullptr);
+        } else {
+            Type* new_type = new Type(*operand->type);
+            new_type->pointer_level++;
+            $$ = new ExprResult(0.0, new_type, nullptr); // Result is not an l-value
+        }
+        delete operand;
+    }
+    | '*' cast_expression %prec SIZEOF {
+        ExprResult* operand = $2;
+        if (operand->type->pointer_level == 0 && operand->type->array_dimensions.empty()) {
+            yyerror("invalid type argument of unary '*' (have 'int')");
+            $$ = new ExprResult(0.0, new Type("error"), nullptr);
+        } else {
+            Type* new_type = new Type(*operand->type);
+            if (new_type->pointer_level > 0) {
+                new_type->pointer_level--;
+            } else { // It's an array
+                new_type->array_dimensions.erase(new_type->array_dimensions.begin());
+            }
+            // The result of dereferencing is an l-value
+            $$ = new ExprResult(operand->lvalue_symbol ? operand->lvalue_symbol->dval : 0.0, new_type, operand->lvalue_symbol);
+        }
+        delete operand;
+    }
     ;
-
 postfix_expression
     : primary_expression { $$ = $1; }
     | postfix_expression LBRACKET expression RBRACKET {
@@ -902,7 +962,7 @@ postfix_expression
                 Symbol* member_sym = it->second;
                 // The result is an lvalue if the struct expression was an lvalue
                 Symbol* result_sym = struct_expr->lvalue_symbol ?
-                    member_sym : nullptr;
+                member_sym : nullptr;
                 $$ = new ExprResult(member_sym->dval, member_sym->type, result_sym);
             }
         }
@@ -973,7 +1033,6 @@ postfix_expression
     | postfix_expression INC_OP { $$ = $1; }
     | postfix_expression DEC_OP { $$ = $1; }
     ;
-
 primary_expression
     : identifier {
         Symbol* sym = lookup_symbol($1);
@@ -991,35 +1050,42 @@ primary_expression
     | STRING_LITERAL { $$ = new ExprResult(0, new Type("char*"), nullptr); }
     | LPAREN expression RPAREN { $$ = $2; }
     ;
-
 parameter_list
     : parameter_declaration { $$ = new vector<Symbol*>(); $$->push_back($1); }
     | parameter_list COMMA parameter_declaration { $1->push_back($3); $$ = $1; }
     ;
-
 parameter_declaration
     : declaration_specifiers declarator {
         Symbol* sym = $2;
-        sym->type->base_type = $1->base_type;
-        sym->type->is_const = $1->is_const;
-        delete $1;
+        Type* base_type = $1;
+        // Merge the base type info into the symbol's type, which has pointer/array info.
+        sym->type->base_type = base_type->base_type;
+        sym->type->kind = base_type->kind;
+        sym->type->is_const = base_type->is_const || sym->type->is_const;
+        if (base_type->kind == TK_STRUCT || base_type->kind == TK_UNION) {
+            sym->type->members = base_type->members;
+        }
+        delete base_type;
         $$ = sym;
     }
     ;
-
 argument_list
     : assignment_expression { $$ = new vector<ExprResult*>(); $$->push_back($1); }
     | argument_list COMMA assignment_expression { $1->push_back($3); $$ = $1; }
     ;
-
 initializer_list
     : LBRACE initializer_items RBRACE { $$ = $2; }
-    | LBRACE RBRACE { $$ = new vector<ExprResult*>(); }
+    | LBRACE RBRACE { $$ = new std::vector<InitializerItem*>(); }
     ;
 
 initializer_items
-    : assignment_expression { $$ = new vector<ExprResult*>(); $$->push_back($1); }
-    | initializer_items COMMA assignment_expression { $1->push_back($3); $$ = $1; }
+    : initializer { $$ = new std::vector<InitializerItem*>(); $$->push_back($1); }
+    | initializer_items COMMA initializer { $1->push_back($3); $$ = $1; }
+    ;
+
+initializer
+    : assignment_expression { $$ = new InitializerItem($1); }
+    | initializer_list { $$ = new InitializerItem($1); }
     ;
 
 %%
