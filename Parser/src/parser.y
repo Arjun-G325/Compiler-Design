@@ -4,6 +4,67 @@
 #include <map>
 #include <stack>
 #include <iostream>
+#include <fstream>
+
+class TACGenerator {
+private:
+    std::ofstream outfile;
+    int temp_count;
+    int label_count;
+    
+public:
+    TACGenerator(const std::string& filename);
+    ~TACGenerator();
+    
+    // Temporary variable generation
+    std::string newTemp();
+    
+    // Label generation
+    std::string newLabel();
+    
+    // Basic TAC operations
+    void emit(const std::string& result, const std::string& arg1, const std::string& op, const std::string& arg2);
+    void emitAssignment(const std::string& result, const std::string& value);
+    void emitUnary(const std::string& result, const std::string& op, const std::string& arg);
+    
+    // Control flow
+    void emitLabel(const std::string& label);
+    void emitGoto(const std::string& label);
+    void emitIfGoto(const std::string& condition, const std::string& label);
+    void emitIfFalseGoto(const std::string& condition, const std::string& label);
+    
+    // Function operations
+    void emitParam(const std::string& param);
+    void emitCall(const std::string& result, const std::string& function, int num_params);
+    void emitReturn(const std::string& value);
+    void emitReturnVoid();
+    void emitFunctionBegin(const std::string& function_name);
+    void emitFunctionEnd(const std::string& function_name);
+    
+    // Array operations
+    void emitArrayAccess(const std::string& result, const std::string& array, const std::string& index);
+    void emitArrayStore(const std::string& array, const std::string& index, const std::string& value);
+    
+    // Pointer operations
+    void emitAddressOf(const std::string& result, const std::string& var);
+    void emitDereference(const std::string& result, const std::string& ptr);
+    void emitPointerStore(const std::string& ptr, const std::string& value);
+    
+    // Structure operations
+    void emitMemberAccess(const std::string& result, const std::string& struct_var, const std::string& member);
+    void emitPointerMemberAccess(const std::string& result, const std::string& struct_ptr, const std::string& member);
+    
+    // Type casting
+    void emitCast(const std::string& result, const std::string& value, const std::string& type);
+    
+    // Comments for readability
+    void emitComment(const std::string& comment);
+    
+    // Raw emit
+    void emitRaw(const std::string& instruction);
+};
+
+extern TACGenerator* tac_gen;
 
 // FORWARD DECLARATIONS FIRST
 struct Type;
@@ -87,16 +148,6 @@ Type* type;
 void* definition;
     };
       
-     // Add proper type copying
-Type* copyType(const Type* src) {
-    Type* dest = new Type(src->base_type, src->kind);
-    dest->is_const = src->is_const;
-    dest->is_unsigned = src->is_unsigned;
-    dest->pointer_level = src->pointer_level;
-    // Deep copy members, array_dimensions, parameter_types
-    return dest;
-}
-      
     // For control flow TAC generation
     struct ControlLabels {
         std::string break_label;
@@ -107,7 +158,6 @@ Type* copyType(const Type* src) {
 
 %{
 #include "parser.tab.h"
-#include "tac.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -284,7 +334,7 @@ void yyerror(const char*s) {
 program
     : { 
         enter_scope(); 
-        tac_gen = new TACGenerator("output.tac");
+        tac_gen = new TACGenerator("/dev/stdout");
         tac_gen->emitComment("Three Address Code Generated");
     } external_declaration_list {
         Symbol* main_sym = lookup_symbol("main");
@@ -2042,6 +2092,136 @@ abstract_declarator
     ;
 
 %%
+
+TACGenerator* tac_gen = nullptr;
+
+TACGenerator::TACGenerator(const std::string& filename) 
+    : temp_count(0), label_count(0) {
+    outfile.open(filename);
+    if (!outfile.is_open()) {
+        std::cerr << "Error: Cannot open TAC output file: " << filename << std::endl;
+        exit(1);
+    }
+}
+
+TACGenerator::~TACGenerator() {
+    if (outfile.is_open()) {
+        outfile.close();
+    }
+}
+
+std::string TACGenerator::newTemp() {
+    return "t" + std::to_string(temp_count++);
+}
+
+std::string TACGenerator::newLabel() {
+    return "L" + std::to_string(label_count++);
+}
+
+void TACGenerator::emit(const std::string& result, const std::string& arg1, 
+                        const std::string& op, const std::string& arg2) {
+    outfile << result << " = " << arg1 << " " << op << " " << arg2 << std::endl;
+}
+
+void TACGenerator::emitAssignment(const std::string& result, const std::string& value) {
+    outfile << result << " = " << value << std::endl;
+}
+
+void TACGenerator::emitUnary(const std::string& result, const std::string& op, 
+                             const std::string& arg) {
+    outfile << result << " = " << op << arg << std::endl;
+}
+
+void TACGenerator::emitLabel(const std::string& label) {
+    outfile << label << ":" << std::endl;
+}
+
+void TACGenerator::emitGoto(const std::string& label) {
+    outfile << "goto " << label << std::endl;
+}
+
+void TACGenerator::emitIfGoto(const std::string& condition, const std::string& label) {
+    outfile << "if " << condition << " goto " << label << std::endl;
+}
+
+void TACGenerator::emitIfFalseGoto(const std::string& condition, const std::string& label) {
+    outfile << "ifFalse " << condition << " goto " << label << std::endl;
+}
+
+void TACGenerator::emitParam(const std::string& param) {
+    outfile << "param " << param << std::endl;
+}
+
+void TACGenerator::emitCall(const std::string& result, const std::string& function, 
+                            int num_params) {
+    if (result.empty()) {
+        outfile << "call " << function << ", " << num_params << std::endl;
+    } else {
+        outfile << result << " = call " << function << ", " << num_params << std::endl;
+    }
+}
+
+void TACGenerator::emitReturn(const std::string& value) {
+    outfile << "return " << value << std::endl;
+}
+
+void TACGenerator::emitReturnVoid() {
+    outfile << "return" << std::endl;
+}
+
+void TACGenerator::emitFunctionBegin(const std::string& function_name) {
+    outfile << "\nBeginFunc " << function_name << std::endl;
+}
+
+void TACGenerator::emitFunctionEnd(const std::string& function_name) {
+    outfile << "EndFunc " << function_name << "\n" << std::endl;
+}
+
+void TACGenerator::emitArrayAccess(const std::string& result, const std::string& array, 
+                                   const std::string& index) {
+    outfile << result << " = " << array << "[" << index << "]" << std::endl;
+}
+
+void TACGenerator::emitArrayStore(const std::string& array, const std::string& index, 
+                                  const std::string& value) {
+    outfile << array << "[" << index << "] = " << value << std::endl;
+}
+
+void TACGenerator::emitAddressOf(const std::string& result, const std::string& var) {
+    outfile << result << " = &" << var << std::endl;
+}
+
+void TACGenerator::emitDereference(const std::string& result, const std::string& ptr) {
+    outfile << result << " = *" << ptr << std::endl;
+}
+
+void TACGenerator::emitPointerStore(const std::string& ptr, const std::string& value) {
+    outfile << "*" << ptr << " = " << value << std::endl;
+}
+
+void TACGenerator::emitMemberAccess(const std::string& result, const std::string& struct_var, 
+                                   const std::string& member) {
+    outfile << result << " = " << struct_var << "." << member << std::endl;
+}
+
+void TACGenerator::emitPointerMemberAccess(const std::string& result, 
+                                          const std::string& struct_ptr, 
+                                          const std::string& member) {
+    outfile << result << " = " << struct_ptr << "->" << member << std::endl;
+}
+
+void TACGenerator::emitCast(const std::string& result, const std::string& value, 
+                           const std::string& type) {
+    outfile << result << " = (" << type << ") " << value << std::endl;
+}
+
+void TACGenerator::emitComment(const std::string& comment) {
+    outfile << "// " << comment << std::endl;
+}
+
+void TACGenerator::emitRaw(const std::string& instruction) {
+    outfile << instruction << std::endl;
+}
 
 int main(int argc, char** argv) {
     if (argc > 1) {
