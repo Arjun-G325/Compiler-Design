@@ -57,23 +57,19 @@ public:
     // Type casting
     void emitCast(const std::string& result, const std::string& value, const std::string& type);
     
-    // Comments for readability
     void emitComment(const std::string& comment);
     
-    // Raw emit
     void emitRaw(const std::string& instruction);
 };
 
 extern TACGenerator* tac_gen;
 
-// FORWARD DECLARATIONS FIRST
 struct Type;
 struct Symbol;
 struct ExprResult;
 struct InitializerItem;
 struct MemberDef;
 
-// NOW the typedefs
 typedef std::vector<Symbol*> SymbolList;
 typedef std::vector<ExprResult*> ExprList;
 typedef std::vector<InitializerItem*> InitializerList;
@@ -139,7 +135,6 @@ bool has_return;
 AccessSpecifier access;
     };
 
-    // For two-pass member checking (within a class)
     struct MemberDef {
         std::string name;
 Type* type;
@@ -283,12 +278,13 @@ void yyerror(const char*s) {
     char* str;
     Type* type_ptr;
     Symbol* symbol_ptr;
-    SymbolList* symbol_list_ptr;           // Changed
+    SymbolList* symbol_list_ptr;   
     ExprResult* expr_ptr;
-    ExprList* arg_list_ptr;                // Changed  
+    ExprResult* expr_val;
+    ExprList* arg_list_ptr;            
     InitializerItem* initializer_item_ptr;
-    InitializerList* initializer_item_list_ptr;  // Changed
-    MemberDefList* member_def_list_ptr;          // Changed
+    InitializerList* initializer_item_list_ptr; 
+    MemberDefList* member_def_list_ptr;          
     MemberDef* member_def_ptr;
     AccessSpecifier access_specifier_val;
 }
@@ -525,14 +521,14 @@ function_definition
           install_symbol(func_sym);
           g_current_function = func_sym;
           
-          // TAC: Function begin
+          // Function begin
           tac_gen->emitFunctionBegin(func_sym->name);
           
           enter_scope();
           if (g_current_param_list) {
               for (Symbol* p : *g_current_param_list) {
                   install_symbol(p);
-                  // TAC: Parameter declaration
+                  // Parameter declaration
                   tac_gen->emitComment("Parameter: " + p->name);
               }
               delete g_current_param_list;
@@ -550,7 +546,7 @@ function_definition
               }
           }
           
-          // TAC: Function end
+          // Function end
           tac_gen->emitFunctionEnd(g_current_function->name);
           
           g_current_function = nullptr;
@@ -824,8 +820,6 @@ typedef_declaration
     }
     ;
 
-//declaration_list: declaration | declaration_list declaration;
-
 struct_declaration_list
     : struct_declaration_item { $$ = $1; }
     | struct_declaration_list struct_declaration_item { $1->insert($1->end(), $2->begin(), $2->end()); delete $2; $$ = $1; }
@@ -854,8 +848,6 @@ struct_declaration_item
         }
     }
     ;
-
-//struct_declaration: declaration_specifiers init_declarator_list SEMICOLON;
 
 identifier: IDENTIFIER { $$ = $1; };
 
@@ -994,47 +986,62 @@ expression_opt
     ;
 
 selection_statement
-    : IF LPAREN expression RPAREN {
-        ExprResult* cond = $3;
-        string false_label = tac_gen->newLabel();
-        string end_label = tac_gen->newLabel();
-        control_stack.push({end_label, false_label});
-        if (!cond->tac_var.empty()) {
-            tac_gen->emitIfFalseGoto(cond->tac_var, false_label);
-        }
-        delete cond;
-    } statement ELSE {
-        string false_label = control_stack.top().continue_label;
-        string end_label = control_stack.top().break_label;
-        tac_gen->emitGoto(end_label);
-        tac_gen->emitLabel(false_label);
-    } statement {
-        string end_label = control_stack.top().break_label;
-        control_stack.pop();
-        tac_gen->emitLabel(end_label);
-    }
-    | IF LPAREN expression RPAREN {
-        ExprResult* cond = $3;
-        string false_label = tac_gen->newLabel();
-        control_stack.push({false_label, ""});
-        if (!cond->tac_var.empty()) {
-            tac_gen->emitIfFalseGoto(cond->tac_var, false_label);
-        }
-        delete cond;
-    } statement {
+    : IF LPAREN expression RPAREN
+      {
+          ExprResult* cond = $3;
+          string false_label = tac_gen->newLabel();
+          
+          control_stack.push({false_label, ""}); 
+          
+          if (!cond->tac_var.empty()) {
+              tac_gen->emitIfFalseGoto(cond->tac_var, false_label);
+          }
+          delete cond;
+      }
+      statement
+      else_handler
+    | SWITCH LPAREN expression RPAREN 
+      {
+          g_switch_depth++;
+          ExprResult* switch_expr = $3;
+          string end_label = tac_gen->newLabel();
+          control_stack.push({end_label, ""}); 
+          tac_gen->emitComment("Switch expression");
+          delete switch_expr;
+      } 
+      statement 
+      {
+          g_switch_depth--;
+          string end_label = control_stack.top().break_label;
+          control_stack.pop();
+          tac_gen->emitLabel(end_label);
+      }
+    ;
+
+else_handler:
+    /* empty */
+    {
         string false_label = control_stack.top().break_label;
         control_stack.pop();
         tac_gen->emitLabel(false_label);
-    } %prec IF_WITHOUT_ELSE
-    | SWITCH LPAREN expression RPAREN {
-        g_switch_depth++;
-        ExprResult* switch_expr = $3;
+    }
+    %prec IF_WITHOUT_ELSE
+    |
+    ELSE
+    {
+        string false_label = control_stack.top().break_label;
+        control_stack.pop();
+        
         string end_label = tac_gen->newLabel();
-        control_stack.push({end_label, ""});
-        tac_gen->emitComment("Switch expression");
-        delete switch_expr;
-    } statement {
-        g_switch_depth--;
+        
+        control_stack.push({end_label, false_label}); 
+        
+        tac_gen->emitGoto(end_label);
+        
+        tac_gen->emitLabel(false_label);
+    }
+    statement
+    {
         string end_label = control_stack.top().break_label;
         control_stack.pop();
         tac_gen->emitLabel(end_label);
@@ -1090,7 +1097,6 @@ iteration_statement
         
         // Jump back to condition check
         string begin_label_stored = control_stack.top().continue_label;
-        // We need to store begin label - let's use a static approach
         tac_gen->emitComment("for increment section");
     } statement {
         g_loop_depth--;
@@ -1142,7 +1148,7 @@ iteration_statement
         
         tac_gen->emitLabel(cond_label);
         if (cond && !cond->tac_var.empty()) {
-            string begin_stored = "loop_begin_" + end_label;  // Reference to beginning
+            string begin_stored = "loop_begin_" + end_label;
             tac_gen->emitIfGoto(cond->tac_var, begin_stored);
         }
         tac_gen->emitLabel(end_label);
@@ -1171,7 +1177,7 @@ jump_statement
                 } else if (return_expr->type->base_type != func_return_type->base_type) {
                     yyerror("Return type mismatch in function");
                 }
-                // TAC: Return with value
+                // Return with value
                 if (!return_expr->tac_var.empty()) {
                     tac_gen->emitReturn(return_expr->tac_var);
                 }
@@ -1180,7 +1186,6 @@ jump_statement
                 if (func_return_type->base_type != "void") {
                     yyerror("Non-void function must return a value");
                 }
-                // TAC: Return void
                 tac_gen->emitReturnVoid();
             }
         }
@@ -1259,7 +1264,6 @@ assignment_expression
         } else {
             lhs->lvalue_symbol->dval = rhs->dval;
             
-            // TAC: Assignment
             if (!rhs->tac_var.empty()) {
                 tac_gen->emitAssignment(lhs->lvalue_symbol->name, rhs->tac_var);
             }
@@ -1279,7 +1283,6 @@ assignment_expression
         } else {
             lhs->lvalue_symbol->dval += rhs->dval;
             
-            // TAC: += operation
             string temp = tac_gen->newTemp();
             if (!rhs->tac_var.empty()) {
                 tac_gen->emit(temp, lhs->lvalue_symbol->name, "+", rhs->tac_var);
@@ -1301,7 +1304,6 @@ assignment_expression
         } else {
             lhs->lvalue_symbol->dval -= rhs->dval;
             
-            // TAC: -= operation
             string temp = tac_gen->newTemp();
             if (!rhs->tac_var.empty()) {
                 tac_gen->emit(temp, lhs->lvalue_symbol->name, "-", rhs->tac_var);
@@ -1323,7 +1325,6 @@ assignment_expression
         } else {
             lhs->lvalue_symbol->dval *= rhs->dval;
             
-            // TAC: *= operation
             string temp = tac_gen->newTemp();
             if (!rhs->tac_var.empty()) {
                 tac_gen->emit(temp, lhs->lvalue_symbol->name, "*", rhs->tac_var);
@@ -1345,7 +1346,6 @@ assignment_expression
         } else {
             lhs->lvalue_symbol->dval /= rhs->dval;
             
-            // TAC: /= operation
             string temp = tac_gen->newTemp();
             if (!rhs->tac_var.empty()) {
                 tac_gen->emit(temp, lhs->lvalue_symbol->name, "/", rhs->tac_var);
@@ -1363,7 +1363,7 @@ assignment_expression
     conditional_expression
     : logical_or_expression { $$ = $1; }
     | logical_or_expression '?' expression ':' conditional_expression {
-        // TAC: Ternary operator
+        // Ternary operator
         ExprResult* cond = $1;
         ExprResult* true_expr = $3;
         ExprResult* false_expr = $5;
@@ -1654,7 +1654,6 @@ unary_expression
         if ($2->lvalue_symbol) {
             $2->lvalue_symbol->dval++;
             
-            // TAC: Pre-increment
             string temp = tac_gen->newTemp();
             tac_gen->emit(temp, $2->lvalue_symbol->name, "+", "1");
             tac_gen->emitAssignment($2->lvalue_symbol->name, temp);
@@ -1672,7 +1671,6 @@ unary_expression
         if ($2->lvalue_symbol) {
             $2->lvalue_symbol->dval--;
             
-            // TAC: Pre-decrement
             string temp = tac_gen->newTemp();
             tac_gen->emit(temp, $2->lvalue_symbol->name, "-", "1");
             tac_gen->emitAssignment($2->lvalue_symbol->name, temp);
@@ -1753,14 +1751,14 @@ unary_expression
         // Sizeof operator
         tac_gen->emitComment("sizeof expression");
         $$ = new ExprResult(4.0, new Type("int"), nullptr);
-        $$->tac_var = "4"; // Placeholder
+        $$->tac_var = "4";
         delete $2;
     }
     | SIZEOF LPAREN type_name RPAREN {
         // Sizeof type
         tac_gen->emitComment("sizeof(" + $3->toString() + ")");
         $$ = new ExprResult(4.0, new Type("int"), nullptr);
-        $$->tac_var = "4"; // Placeholder
+        $$->tac_var = "4";
         delete $3;
     }
     ;
@@ -1793,7 +1791,6 @@ postfix_expression
         // Function call with arguments
         vector<ExprResult*>* args = $3;
         
-        // Emit parameters in order
         for (ExprResult* arg : *args) {
             if (!arg->tac_var.empty()) {
                 tac_gen->emitParam(arg->tac_var);
@@ -1874,7 +1871,6 @@ postfix_expression
         free($3);
     }
     | postfix_expression INC_OP {
-        // Post-increment
         if ($1->lvalue_symbol) {
             string old_value = tac_gen->newTemp();
             tac_gen->emitAssignment(old_value, $1->lvalue_symbol->name);
@@ -1893,7 +1889,6 @@ postfix_expression
         delete $1;
     }
     | postfix_expression DEC_OP {
-        // Post-decrement
         if ($1->lvalue_symbol) {
             string old_value = tac_gen->newTemp();
             tac_gen->emitAssignment(old_value, $1->lvalue_symbol->name);
