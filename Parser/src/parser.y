@@ -131,8 +131,10 @@ struct Symbol {
         Type* type;
         SymbolKind kind;
         double dval;
-bool has_return;
-AccessSpecifier access;
+        bool has_return;
+        AccessSpecifier access;
+        std::string init_expr;
+        bool has_initializer = false;
     };
 
     struct MemberDef {
@@ -582,9 +584,14 @@ declaration
                         sym->type->members = g_current_base_type->members;
                     }
                 }
-                install_symbol(sym);
-                // TAC: Variable declaration
+                
+                // NOW emit comment and assignment in correct order
                 tac_gen->emitComment("Variable declaration: " + sym->name + " : " + sym->type->toString());
+                if (sym->has_initializer && !sym->init_expr.empty()) {
+                    tac_gen->emitAssignment(sym->name, sym->init_expr);
+                }
+                
+                install_symbol(sym);
             }
         }
         delete g_current_base_type;
@@ -593,7 +600,6 @@ declaration
     }
     | declaration_specifiers SEMICOLON { delete $1; }
     ;
-
 declaration_specifiers
     : storage_class_specifier declaration_specifiers { $$ = $2; }
     | type_qualifier declaration_specifiers { 
@@ -624,35 +630,35 @@ init_declarator
         $$ = $1;
     }
     | declarator ASSIGN assignment_expression {
-        Symbol* sym = $1;
-        ExprResult* expr = $3;
-        sym->dval = expr->dval;
-
-        if (g_current_base_type && g_current_base_type->base_type == "auto") {
-            if (expr->type && expr->type->kind == TK_FUNCTION) {
-                sym->type = expr->type;
-                sym->kind = SK_FUNCTION;
-            } else {
-                sym->type->base_type = expr->type->base_type;
-                sym->type->kind = expr->type->kind;
-                sym->type->members = expr->type->members;
-                sym->type->is_const = g_current_base_type->is_const || sym->type->is_const;
-                sym->type->pointer_level += expr->type->pointer_level;
-                sym->type->array_dimensions.insert(sym->type->array_dimensions.end(),
-                                                   expr->type->array_dimensions.begin(),
-                                                   expr->type->array_dimensions.end());
-            }
+    Symbol* sym = $1;
+    ExprResult* expr = $3;
+    sym->dval = expr->dval;
+    
+    if (g_current_base_type && g_current_base_type->base_type == "auto") {
+        if (expr->type && expr->type->kind == TK_FUNCTION) {
+            sym->type = expr->type;
+            sym->kind = SK_FUNCTION;
+        } else {
+            sym->type->base_type = expr->type->base_type;
+            sym->type->kind = expr->type->kind;
+            sym->type->members = expr->type->members;
+            sym->type->is_const = g_current_base_type->is_const || sym->type->is_const;
+            sym->type->pointer_level += expr->type->pointer_level;
+            sym->type->array_dimensions.insert(sym->type->array_dimensions.end(),
+                                               expr->type->array_dimensions.begin(),
+                                               expr->type->array_dimensions.end());
         }
-
-        // TAC: Assignment during initialization
-        if (!expr->tac_var.empty()) {
-            tac_gen->emitAssignment(sym->name, expr->tac_var);
-        }
-
-        delete expr;
-        $$ = sym;
     }
+    
+    // Store the initializer expression to emit later
+    sym->init_expr = expr->tac_var;  // Add this field to Symbol struct
+    sym->has_initializer = true;     // Add this field too
+    
+    delete expr;
+    $$ = sym;
+}
     | declarator ASSIGN initializer_list {
+        // Add comment here too
         Symbol* sym = $1;
         std::vector<InitializerItem*>* initializers = $3;
         if (!sym->type->array_dimensions.empty()) {
@@ -662,7 +668,8 @@ init_declarator
             }
         }
         
-        // TAC: Array initialization
+        // TAC: Comment first
+        tac_gen->emitComment("Variable declaration: " + sym->name + " : " + sym->type->toString());
         tac_gen->emitComment("Array initialization: " + sym->name);
         int index = 0;
         for (auto item : *initializers) {
@@ -676,7 +683,6 @@ init_declarator
         $$ = sym;
     }
     ;
-
 declarator
     : direct_declarator { $$ = $1; }
     | '*' declarator { 
