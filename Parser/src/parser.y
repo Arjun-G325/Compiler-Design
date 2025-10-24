@@ -309,6 +309,9 @@ void yyerror(const char*s) {
 %type <initializer_item_list_ptr> initializer_list initializer_items
 %type <initializer_item_ptr> initializer
 
+%nonassoc IF_WITHOUT_ELSE
+%nonassoc ELSE
+
 %right ASSIGN ADD_ASSIGN SUB_ASSIGN MUL_ASSIGN DIV_ASSIGN MOD_ASSIGN AND_ASSIGN OR_ASSIGN XOR_ASSIGN SHL_ASSIGN SHR_ASSIGN
 %right '?'
 %left OR_OP
@@ -323,9 +326,6 @@ void yyerror(const char*s) {
 %left '*' '/' '%'
 %right '!' '~' INC_OP DEC_OP SIZEOF
 %left DOT PTR_OP LPAREN RPAREN LBRACKET RBRACKET
-
-%nonassoc IF_WITHOUT_ELSE
-%nonassoc ELSE
 
 %start program
 
@@ -997,19 +997,6 @@ selection_statement
     : IF LPAREN expression RPAREN {
         ExprResult* cond = $3;
         string false_label = tac_gen->newLabel();
-        control_stack.push({false_label, ""});
-        if (!cond->tac_var.empty()) {
-            tac_gen->emitIfFalseGoto(cond->tac_var, false_label);
-        }
-        delete cond;
-    } statement {
-        string false_label = control_stack.top().break_label;
-        control_stack.pop();
-        tac_gen->emitLabel(false_label);
-    } %prec IF_WITHOUT_ELSE
-    | IF LPAREN expression RPAREN {
-        ExprResult* cond = $3;
-        string false_label = tac_gen->newLabel();
         string end_label = tac_gen->newLabel();
         control_stack.push({end_label, false_label});
         if (!cond->tac_var.empty()) {
@@ -1026,6 +1013,19 @@ selection_statement
         control_stack.pop();
         tac_gen->emitLabel(end_label);
     }
+    | IF LPAREN expression RPAREN {
+        ExprResult* cond = $3;
+        string false_label = tac_gen->newLabel();
+        control_stack.push({false_label, ""});
+        if (!cond->tac_var.empty()) {
+            tac_gen->emitIfFalseGoto(cond->tac_var, false_label);
+        }
+        delete cond;
+    } statement {
+        string false_label = control_stack.top().break_label;
+        control_stack.pop();
+        tac_gen->emitLabel(false_label);
+    } %prec IF_WITHOUT_ELSE
     | SWITCH LPAREN expression RPAREN {
         g_switch_depth++;
         ExprResult* switch_expr = $3;
