@@ -112,19 +112,21 @@ enum TypeKind { TK_BASE, TK_STRUCT, TK_CLASS, TK_UNION, TK_ENUM, TK_FUNCTION };
     enum SymbolKind { SK_VARIABLE, SK_TYPEDEF_NAME, SK_FUNCTION, SK_ENUM_CONSTANT };
 
 struct Type {
-        TypeKind kind;
-        std::string base_type;
-        bool is_const;
-        bool is_unsigned;
-        int pointer_level;
-std::map<std::string, Symbol*> members;
-        std::vector<int> array_dimensions;
-Type* return_type;
-        std::vector<Type*> parameter_types;
-Type(std::string base = "", TypeKind k = TK_BASE);
-        std::string toString() const;
-~Type();
-    };
+    TypeKind kind;
+    std::string base_type;
+    bool is_const;
+    bool is_unsigned;
+    int pointer_level;
+    std::map<std::string, Symbol*> members;
+    std::vector<int> array_dimensions;
+    Type* return_type;
+    std::vector<Type*> parameter_types;
+    
+    Type(std::string base = "", TypeKind k = TK_BASE);
+    std::string toString() const;
+    ~Type();
+    int getSize() const;
+};
 
 struct Symbol {
         std::string name;
@@ -136,6 +138,51 @@ struct Symbol {
         std::string init_expr;
         bool has_initializer = false;
     };
+  
+   inline int Type::getSize() const {
+        int base_size = 0;
+        
+        // Base type sizes
+        if (base_type == "char") base_size = 1;
+        else if (base_type == "short") base_size = 2;
+        else if (base_type == "int") base_size = 4;
+        else if (base_type == "long") base_size = 8;
+        else if (base_type == "float") base_size = 4;
+        else if (base_type == "double") base_size = 8;
+        else if (base_type == "void") base_size = 0;
+        else if (kind == TK_STRUCT || kind == TK_CLASS) {
+            // Calculate struct/class size (sum of all members)
+            for (const auto& member : members) {
+                base_size += member.second->type->getSize();
+            }
+        }
+        else if (kind == TK_UNION) {
+            // Calculate union size (max of all members)
+            for (const auto& member : members) {
+                int member_size = member.second->type->getSize();
+                if (member_size > base_size) base_size = member_size;
+            }
+        }
+        else if (kind == TK_ENUM) {
+            base_size = 4; // Enums are typically int-sized
+        }
+        else if (kind == TK_FUNCTION) {
+            return 8; // Function pointers
+        }
+        
+        // Pointer types are always pointer-sized (8 bytes on 64-bit)
+        if (pointer_level > 0) {
+            return 8;
+        }
+        
+        // Array dimensions multiply the size
+        int total_size = base_size;
+        for (int dim : array_dimensions) {
+            if (dim > 0) total_size *= dim;
+        }
+        
+        return total_size;
+    }
 
     struct MemberDef {
         std::string name;
@@ -585,8 +632,11 @@ declaration
                     }
                 }
                 
-                // NOW emit comment and assignment in correct order
-                tac_gen->emitComment("Variable declaration: " + sym->name + " : " + sym->type->toString());
+                // Emit with size information
+                int size = sym->type->getSize();
+                tac_gen->emitComment("Variable declaration: " + sym->name + " : " + 
+                                    sym->type->toString() + " (size: " + to_string(size) + " bytes)");
+                
                 if (sym->has_initializer && !sym->init_expr.empty()) {
                     tac_gen->emitAssignment(sym->name, sym->init_expr);
                 }
