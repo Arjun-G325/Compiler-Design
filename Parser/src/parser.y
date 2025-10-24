@@ -147,6 +147,9 @@ void* definition;
     struct ControlLabels {
         std::string break_label;
         std::string continue_label;
+        std::string cond_label;   
+        std::string body_label;    
+        ExprResult* incr_expr;
     };
 
     struct ForLoopLabels {
@@ -1080,71 +1083,75 @@ iteration_statement
         control_stack.pop();
     }
     | FOR LPAREN expression_opt SEMICOLON {
-        string begin_label = tac_gen->newLabel();
-        string end_label = tac_gen->newLabel();
-        string continue_label = tac_gen->newLabel();
-        string body_label = tac_gen->newLabel();
-        
-        if ($3) delete $3;
-        tac_gen->emitLabel(begin_label);
-        control_stack.push({end_label, continue_label});
-    } expression_opt SEMICOLON {
-        ExprResult* cond = $6;
-        string end_label = control_stack.top().break_label;
-        string body_label = tac_gen->newLabel();
-        
-        if (cond && !cond->tac_var.empty()) {
-            tac_gen->emitIfFalseGoto(cond->tac_var, end_label);
-        }
-        tac_gen->emitGoto(body_label);
-        tac_gen->emitLabel(control_stack.top().continue_label);
-        delete cond;
-    } expression_opt RPAREN {
-        g_loop_depth++;
-        ExprResult* incr = $9;
-        if (incr) delete incr;
-        
-        // Jump back to condition check
-        string begin_label_stored = control_stack.top().continue_label;
-        tac_gen->emitComment("for increment section");
-    } statement {
-        g_loop_depth--;
-        string continue_label = control_stack.top().continue_label;
-        string end_label = control_stack.top().break_label;
-        tac_gen->emitGoto(continue_label);
-        tac_gen->emitLabel(end_label);
-        control_stack.pop();
+    string cond_label = tac_gen->newLabel();
+    string end_label = tac_gen->newLabel();
+    
+    if ($3) delete $3;
+    
+    tac_gen->emitLabel(cond_label);
+    control_stack.push({end_label, cond_label, cond_label, "", nullptr});
+} expression_opt SEMICOLON {
+    ExprResult* cond = $6;
+    string end_label = control_stack.top().break_label;
+    
+    if (cond && !cond->tac_var.empty()) {
+        tac_gen->emitIfFalseGoto(cond->tac_var, end_label);
     }
+    // NO goto here - just fall through
+    delete cond;
+} expression_opt RPAREN {
+    g_loop_depth++;
+    ExprResult* incr = $9;
+    control_stack.top().incr_expr = incr;
+    // NO emitLabel here!
+} statement {
+    g_loop_depth--;
+    
+    // Emit increment directly (no label before it)
+    ExprResult* incr = control_stack.top().incr_expr;
+    if (incr) delete incr;
+    
+    string cond_label = control_stack.top().cond_label;
+    string end_label = control_stack.top().break_label;
+    tac_gen->emitGoto(cond_label);
+    tac_gen->emitLabel(end_label);
+    control_stack.pop();
+}
     | FOR LPAREN declaration {
-        string begin_label = tac_gen->newLabel();
-        string end_label = tac_gen->newLabel();
-        string continue_label = tac_gen->newLabel();
-        tac_gen->emitLabel(begin_label);
-        control_stack.push({end_label, continue_label});
-    } expression_opt SEMICOLON expression_opt RPAREN {
-        g_loop_depth++;
-        ExprResult* cond = $5;
-        ExprResult* incr = $7;
-        
-        string end_label = control_stack.top().break_label;
-        if (cond && !cond->tac_var.empty()) {
-            tac_gen->emitIfFalseGoto(cond->tac_var, end_label);
-        }
-        
-        if (cond) delete cond;
-        if (incr) delete incr;
-    } statement {
-        g_loop_depth--;
-        string continue_label = control_stack.top().continue_label;
-        string end_label = control_stack.top().break_label;
-        tac_gen->emitLabel(continue_label);
-        tac_gen->emitGoto(continue_label);
-        tac_gen->emitLabel(end_label);
-        control_stack.pop();
+    string cond_label = tac_gen->newLabel();
+    string end_label = tac_gen->newLabel();
+    
+    tac_gen->emitLabel(cond_label);
+    control_stack.push({end_label, cond_label, cond_label, "", nullptr});
+} expression_opt SEMICOLON {
+    ExprResult* cond = $5;
+    string end_label = control_stack.top().break_label;
+    
+    if (cond && !cond->tac_var.empty()) {
+        tac_gen->emitIfFalseGoto(cond->tac_var, end_label);
     }
+    // NO goto here - just fall through
+    delete cond;
+} expression_opt RPAREN {
+    g_loop_depth++;
+    ExprResult* incr = $8;
+    control_stack.top().incr_expr = incr;
+    // NO emitLabel here!
+} statement {
+    g_loop_depth--;
+    
+    // Emit increment directly (no label before it)
+    ExprResult* incr = control_stack.top().incr_expr;
+    if (incr) delete incr;
+    
+    string cond_label = control_stack.top().cond_label;
+    string end_label = control_stack.top().break_label;
+    tac_gen->emitGoto(cond_label);
+    tac_gen->emitLabel(end_label);
+    control_stack.pop();
+}
     | DO do_while_head statement WHILE LPAREN expression RPAREN SEMICOLON {
         g_loop_depth--; 
-
         std::string* begin_label_ptr = $2; 
         
         ExprResult* cond = $6; 
