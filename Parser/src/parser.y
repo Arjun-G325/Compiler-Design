@@ -287,6 +287,7 @@ void yyerror(const char*s) {
     MemberDefList* member_def_list_ptr;          
     MemberDef* member_def_ptr;
     AccessSpecifier access_specifier_val;
+    std::string* string_ptr;
 }
 
 %type <expr_ptr> expression expression_opt assignment_expression conditional_expression logical_or_expression
@@ -304,6 +305,7 @@ void yyerror(const char*s) {
 %type <arg_list_ptr> argument_list
 %type <initializer_item_list_ptr> initializer_list initializer_items
 %type <initializer_item_ptr> initializer
+%type <string_ptr> do_while_head
 
 %nonassoc IF_WITHOUT_ELSE
 %nonassoc ELSE
@@ -1133,27 +1135,37 @@ iteration_statement
         tac_gen->emitLabel(end_label);
         control_stack.pop();
     }
-    | DO {
+    | DO do_while_head statement WHILE LPAREN expression RPAREN SEMICOLON {
+        g_loop_depth--; 
+
+        std::string* begin_label_ptr = $2; 
+        
+        ExprResult* cond = $6; 
+        string cond_label = control_stack.top().continue_label;
+        string end_label = control_stack.top().break_label;
+        
+        tac_gen->emitLabel(cond_label);
+        if (cond && !cond->tac_var.empty()) {
+            tac_gen->emitIfGoto(cond->tac_var, *begin_label_ptr);
+        }
+        tac_gen->emitLabel(end_label);
+        control_stack.pop();
+        delete cond;
+        
+        delete begin_label_ptr;
+    }
+    ;
+
+do_while_head
+    : {
         g_loop_depth++;
         string begin_label = tac_gen->newLabel();
         string end_label = tac_gen->newLabel();
         string cond_label = tac_gen->newLabel();
         control_stack.push({end_label, cond_label});
         tac_gen->emitLabel(begin_label);
-    } statement WHILE LPAREN expression RPAREN SEMICOLON {
-        g_loop_depth--;
-        ExprResult* cond = $6;
-        string cond_label = control_stack.top().continue_label;
-        string end_label = control_stack.top().break_label;
         
-        tac_gen->emitLabel(cond_label);
-        if (cond && !cond->tac_var.empty()) {
-            string begin_stored = "loop_begin_" + end_label;
-            tac_gen->emitIfGoto(cond->tac_var, begin_stored);
-        }
-        tac_gen->emitLabel(end_label);
-        control_stack.pop();
-        delete cond;
+        $$ = new std::string(begin_label);
     }
     ;
 
