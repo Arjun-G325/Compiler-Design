@@ -149,6 +149,11 @@ void* definition;
         std::string continue_label;
     };
 
+    struct ForLoopLabels {
+        std::string cond_label;
+        std::string body_label; 
+    };
+
 }
 
 %{
@@ -306,6 +311,8 @@ void yyerror(const char*s) {
 %type <initializer_item_list_ptr> initializer_list initializer_items
 %type <initializer_item_ptr> initializer
 %type <string_ptr> do_while_head
+%type <type_ptr> for_init_marker
+%type <string_ptr> for_cond_marker for_inc_marker
 
 %nonassoc IF_WITHOUT_ELSE
 %nonassoc ELSE
@@ -1170,59 +1177,57 @@ do_while_head
     ;
 
 jump_statement
-    : RETURN expression_opt SEMICOLON {
-        if (g_parsing_lambda) {
-            if ($2) {
-                g_inferred_return_type = new Type(*$2->type);
-            } else {
-                g_inferred_return_type = new Type("void");
-            }
-        } else if (!g_current_function) {
-            yyerror("'return' statement not in function");
-        } else {
-            g_current_function->has_return = true;
-            Type* func_return_type = g_current_function->type->return_type;
-            ExprResult* return_expr = $2;
-            if (return_expr) {
-                if (func_return_type->base_type == "void") {
-                    yyerror("Cannot return a value from a void function");
-                } else if (return_expr->type->base_type != func_return_type->base_type) {
-                    yyerror("Return type mismatch in function");
-                }
-                // Return with value
-                if (!return_expr->tac_var.empty()) {
-                    tac_gen->emitReturn(return_expr->tac_var);
-                }
-                delete return_expr;
-            } else {
-                if (func_return_type->base_type != "void") {
-                    yyerror("Non-void function must return a value");
-                }
-                tac_gen->emitReturnVoid();
-            }
-        }
-    }
-    | BREAK SEMICOLON {
-        if (g_loop_depth == 0 && g_switch_depth == 0) {
-            yyerror("'break' statement not in loop or switch statement");
-        } else if (!control_stack.empty()) {
-            string break_label = control_stack.top().break_label;
-            tac_gen->emitGoto(break_label);
-        }
-    }
-    | CONTINUE SEMICOLON {
-        if (!control_stack.empty() && !control_stack.top().continue_label.empty()) {
-            string continue_label = control_stack.top().continue_label;
-            tac_gen->emitGoto(continue_label);
-        }
-    }
-    | GOTO identifier SEMICOLON {
+    : GOTO identifier SEMICOLON
+    {
         string label_name = string($2);
+        // Check if label is defined, if not, add to unresolved list
         if (g_labels.find(label_name) == g_labels.end()) {
             g_unresolved_gotos.push_back(label_name);
         }
         tac_gen->emitGoto(label_name);
         free($2);
+    }
+    | CONTINUE SEMICOLON
+    {
+        // Check if we are inside a loop
+        if (g_loop_depth == 0) {
+            yyerror("continue statement not within a loop");
+        } else {
+            // Jump to the continue label of the current loop
+            tac_gen->emitGoto(control_stack.top().continue_label);
+        }
+    }
+    | BREAK SEMICOLON
+    {
+        // Check if we are inside a loop OR a switch
+        if (g_loop_depth == 0 && g_switch_depth == 0) {
+            yyerror("break statement not within loop or switch");
+        } else {
+            // Jump to the break label of the current loop/switch
+            tac_gen->emitGoto(control_stack.top().break_label);
+        }
+    }
+    | RETURN expression_opt SEMICOLON
+    {
+        if (g_current_function) {
+            g_current_function->has_return = true;
+            ExprResult* expr = $2;
+            if (expr) {
+                // Check return type
+                if (g_current_function->type->return_type->base_type == "void") {
+                    yyerror(("function '" + g_current_function->name + "' returns a value, but its return type is void").c_str());
+                }
+                tac_gen->emitReturn(expr->tac_var);
+                delete expr;
+            } else {
+                if (g_current_function->type->return_type->base_type != "void") {
+                     yyerror(("non-void function '" + g_current_function->name + "' should return a value").c_str());
+                }
+                tac_gen->emitReturnVoid();
+            }
+        } else {
+            yyerror("return statement not within a function");
+        }
     }
     ;
 
