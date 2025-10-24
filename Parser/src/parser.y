@@ -272,7 +272,7 @@ Type* g_inferred_return_type = nullptr;
 
 // Control flow label stack
 stack<ControlLabels> control_stack;
-
+std::stack<std::pair<string, string>> if_stack;
 
 void enter_scope() { symbol_table.push(map<string, Symbol*>()); }
 void exit_scope() { if (!symbol_table.empty()) symbol_table.pop(); }
@@ -1054,12 +1054,13 @@ expression_opt
     ;
 
 selection_statement
-    : IF LPAREN expression RPAREN
+   : IF LPAREN expression RPAREN
       {
           ExprResult* cond = $3;
           string false_label = tac_gen->newLabel();
           
-          control_stack.push({false_label, ""}); 
+          // DON'T push to control_stack - use if_stack instead
+          if_stack.push({false_label, ""});
           
           if (!cond->tac_var.empty()) {
               tac_gen->emitIfFalseGoto(cond->tac_var, false_label);
@@ -1089,29 +1090,28 @@ selection_statement
 else_handler:
     /* empty */
     {
-        string false_label = control_stack.top().break_label;
-        control_stack.pop();
+        string false_label = if_stack.top().first;  // Use if_stack instead
+        if_stack.pop();
         tac_gen->emitLabel(false_label);
     }
     %prec IF_WITHOUT_ELSE
     |
     ELSE
     {
-        string false_label = control_stack.top().break_label;
-        control_stack.pop();
+        string false_label = if_stack.top().first;  // Use if_stack
+        if_stack.pop();
         
         string end_label = tac_gen->newLabel();
         
-        control_stack.push({end_label, false_label}); 
+        if_stack.push({false_label, end_label});  // Push back with end_label
         
         tac_gen->emitGoto(end_label);
-        
         tac_gen->emitLabel(false_label);
     }
     statement
     {
-        string end_label = control_stack.top().break_label;
-        control_stack.pop();
+        string end_label = if_stack.top().second;  // Use if_stack
+        if_stack.pop();
         tac_gen->emitLabel(end_label);
     }
     ;
