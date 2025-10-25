@@ -6,6 +6,8 @@
 #include <iostream>
 #include <fstream>
 #include <cmath>
+#include <sstream>
+#include <iomanip>
 
 class TACGenerator {
 private:
@@ -942,18 +944,10 @@ declaration
                     }
                 }
                 
-                // Emit with size information
+                // Emit declaration FIRST, before any initialization
                 int size = sym->type->getSize();
                 tac_gen->emitComment("Variable declaration: " + sym->name + " : " + 
                                     sym->type->toString() + " (size: " + to_string(size) + " bytes)");
-                
-                if (sym->has_initializer && !sym->init_expr.empty()) {
-                    if (sym->type->isFloatType()) {
-                        tac_gen->emitFloatAssignment(sym->name, sym->init_expr);
-                    } else {
-                        tac_gen->emitIntAssignment(sym->name, sym->init_expr);
-                    }
-                }
                 
                 install_symbol(sym);
             }
@@ -1021,22 +1015,27 @@ init_declarator
     // Emit assignment with proper type annotation
     if (sym->type->isFloatType()) {
         if (expr->type->isFloatType()) {
+            // Direct float assignment
             tac_gen->emitFloatAssignment(sym->name, expr->tac_var);
         } else {
-            // Float variable assigned with int value - convert
+            // Float variable assigned with int value - convert int to float
             string temp = tac_gen->newFloatTemp();
             tac_gen->emitIntToFloat(temp, expr->tac_var);
             tac_gen->emitFloatAssignment(sym->name, temp);
         }
-    } else {
+    } else if (sym->type->isIntType()) {
         if (expr->type->isFloatType()) {
-            // Int variable assigned with float value - convert and truncate
+            // Int variable assigned with float value - convert float to int
             string temp = tac_gen->newIntTemp();
             tac_gen->emitFloatToInt(temp, expr->tac_var);
             tac_gen->emitIntAssignment(sym->name, temp);
         } else {
+            // Direct int assignment
             tac_gen->emitIntAssignment(sym->name, expr->tac_var);
         }
+    } else {
+        // For other types (char, etc.), use generic assignment
+        tac_gen->emitAssignment(sym->name, expr->tac_var);
     }
     
     delete expr;
@@ -1052,7 +1051,6 @@ init_declarator
             }
         }
         
-        tac_gen->emitComment("Variable declaration: " + sym->name + " : " + sym->type->toString());
         tac_gen->emitComment("Array initialization: " + sym->name);
         int index = 0;
         for (auto item : *initializers) {
@@ -2587,7 +2585,9 @@ primary_expression
     | FLOAT_LITERAL { 
         $$ = new ExprResult($1, new Type("float")); 
         $$->is_const_expr = true; 
-        $$->tac_var = to_string($1);
+        std::stringstream ss;
+        ss << std::fixed << std::setprecision(6) << $1;
+        $$->tac_var = ss.str();
     }
     | CHAR_LITERAL { 
         $$ = new ExprResult((double)$1[1], new Type("char")); 
@@ -2775,11 +2775,11 @@ std::string TACGenerator::newTemp() {
 }
 
 std::string TACGenerator::newIntTemp() {
-    return "i" + std::to_string(temp_count++) + " [int]";
+    return "i" + std::to_string(temp_count++);
 }
 
 std::string TACGenerator::newFloatTemp() {
-    return "f" + std::to_string(temp_count++) + " [float]";
+    return "f" + std::to_string(temp_count++);
 }
 
 std::string TACGenerator::newLabel() {
@@ -2912,11 +2912,11 @@ void TACGenerator::emitCast(const std::string& result, const std::string& value,
 }
 
 void TACGenerator::emitIntToFloat(const std::string& result, const std::string& int_val) {
-    outfile << result << " = (float)" << int_val << "  [INT->FLOAT]" << std::endl;
+    outfile << result << " = " << int_val << "  [int->float]" << std::endl;
 }
 
 void TACGenerator::emitFloatToInt(const std::string& result, const std::string& float_val) {
-    outfile << result << " = (int)" << float_val << "  [FLOAT->INT]" << std::endl;
+    outfile << result << " = " << float_val << "  [float->int]" << std::endl;
 }
 
 void TACGenerator::emitComment(const std::string& comment) {
