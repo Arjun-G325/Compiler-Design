@@ -944,10 +944,21 @@ declaration
                     }
                 }
                 
-                // Emit declaration FIRST, before any initialization
+                // Emit declaration comment FIRST (now type is complete, size will be correct)
                 int size = sym->type->getSize();
                 tac_gen->emitComment("Variable declaration: " + sym->name + " : " + 
                                     sym->type->toString() + " (size: " + to_string(size) + " bytes)");
+                
+                // THEN emit initialization if present
+                if (sym->has_initializer && !sym->init_expr.empty()) {
+                    if (sym->type->isFloatType()) {
+                        tac_gen->emitFloatAssignment(sym->name, sym->init_expr);
+                    } else if (sym->type->isIntType()) {
+                        tac_gen->emitIntAssignment(sym->name, sym->init_expr);
+                    } else {
+                        tac_gen->emitAssignment(sym->name, sym->init_expr);
+                    }
+                }
                 
                 install_symbol(sym);
             }
@@ -988,59 +999,33 @@ init_declarator
         $$ = $1;
     }
     | declarator ASSIGN assignment_expression {
-    Symbol* sym = $1;
-    ExprResult* expr = $3;
-    sym->dval = expr->dval;
-    
-    if (g_current_base_type && g_current_base_type->base_type == "auto") {
-        if (expr->type && expr->type->kind == TK_FUNCTION) {
-            sym->type = expr->type;
-            sym->kind = SK_FUNCTION;
-        } else {
-            sym->type->base_type = expr->type->base_type;
-            sym->type->kind = expr->type->kind;
-            sym->type->members = expr->type->members;
-            sym->type->is_const = g_current_base_type->is_const || sym->type->is_const;
-            sym->type->pointer_level += expr->type->pointer_level;
-            sym->type->array_dimensions.insert(sym->type->array_dimensions.end(),
-                                               expr->type->array_dimensions.begin(),
-                                               expr->type->array_dimensions.end());
+        Symbol* sym = $1;
+        ExprResult* expr = $3;
+        sym->dval = expr->dval;
+        
+        if (g_current_base_type && g_current_base_type->base_type == "auto") {
+            if (expr->type && expr->type->kind == TK_FUNCTION) {
+                sym->type = expr->type;
+                sym->kind = SK_FUNCTION;
+            } else {
+                sym->type->base_type = expr->type->base_type;
+                sym->type->kind = expr->type->kind;
+                sym->type->members = expr->type->members;
+                sym->type->is_const = g_current_base_type->is_const || sym->type->is_const;
+                sym->type->pointer_level += expr->type->pointer_level;
+                sym->type->array_dimensions.insert(sym->type->array_dimensions.end(),
+                                                   expr->type->array_dimensions.begin(),
+                                                   expr->type->array_dimensions.end());
+            }
         }
+        
+        // Store the initializer to emit later in declaration rule
+        sym->init_expr = expr->tac_var;
+        sym->has_initializer = true;
+        
+        delete expr;
+        $$ = sym;
     }
-    
-    // Store the initializer expression to emit later
-    sym->init_expr = expr->tac_var;
-    sym->has_initializer = true;
-    
-    // Emit assignment with proper type annotation
-    if (sym->type->isFloatType()) {
-        if (expr->type->isFloatType()) {
-            // Direct float assignment
-            tac_gen->emitFloatAssignment(sym->name, expr->tac_var);
-        } else {
-            // Float variable assigned with int value - convert int to float
-            string temp = tac_gen->newFloatTemp();
-            tac_gen->emitIntToFloat(temp, expr->tac_var);
-            tac_gen->emitFloatAssignment(sym->name, temp);
-        }
-    } else if (sym->type->isIntType()) {
-        if (expr->type->isFloatType()) {
-            // Int variable assigned with float value - convert float to int
-            string temp = tac_gen->newIntTemp();
-            tac_gen->emitFloatToInt(temp, expr->tac_var);
-            tac_gen->emitIntAssignment(sym->name, temp);
-        } else {
-            // Direct int assignment
-            tac_gen->emitIntAssignment(sym->name, expr->tac_var);
-        }
-    } else {
-        // For other types (char, etc.), use generic assignment
-        tac_gen->emitAssignment(sym->name, expr->tac_var);
-    }
-    
-    delete expr;
-    $$ = sym;
-}
     | declarator ASSIGN initializer_list {
         Symbol* sym = $1;
         std::vector<InitializerItem*>* initializers = $3;
