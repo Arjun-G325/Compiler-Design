@@ -5,6 +5,7 @@
 #include <stack>
 #include <iostream>
 #include <fstream>
+#include <cmath>
 
 class TACGenerator {
 private:
@@ -18,14 +19,22 @@ public:
     
     // Temporary variable generation
     std::string newTemp();
+    std::string newIntTemp();
+    std::string newFloatTemp();
     
     // Label generation
     std::string newLabel();
     
-    // Basic TAC operations
+    // Basic TAC operations with type awareness
     void emit(const std::string& result, const std::string& arg1, const std::string& op, const std::string& arg2);
+    void emitIntOp(const std::string& result, const std::string& arg1, const std::string& op, const std::string& arg2);
+    void emitFloatOp(const std::string& result, const std::string& arg1, const std::string& op, const std::string& arg2);
     void emitAssignment(const std::string& result, const std::string& value);
+    void emitIntAssignment(const std::string& result, const std::string& value);
+    void emitFloatAssignment(const std::string& result, const std::string& value);
     void emitUnary(const std::string& result, const std::string& op, const std::string& arg);
+    void emitIntUnary(const std::string& result, const std::string& op, const std::string& arg);
+    void emitFloatUnary(const std::string& result, const std::string& op, const std::string& arg);
     
     // Control flow
     void emitLabel(const std::string& label);
@@ -56,10 +65,15 @@ public:
     
     // Type casting
     void emitCast(const std::string& result, const std::string& value, const std::string& type);
+    void emitIntToFloat(const std::string& result, const std::string& int_val);
+    void emitFloatToInt(const std::string& result, const std::string& float_val);
     
     void emitComment(const std::string& comment);
     
     void emitRaw(const std::string& instruction);
+    
+    // Helper function to determine operation type
+    std::string getOperationType(const std::string& type1, const std::string& type2);
 };
 
 extern TACGenerator* tac_gen;
@@ -84,6 +98,7 @@ struct ExprResult {
         Symbol* lvalue_symbol;
         bool is_const_expr;
         std::string tac_var;  // TAC variable name
+        std::string string_val;
 ExprResult(double v = 0.0, Type* t = nullptr, Symbol* s = nullptr)
             : dval(v), type(t), lvalue_symbol(s), is_const_expr(false), tac_var("") {}
     };
@@ -126,6 +141,8 @@ struct Type {
     std::string toString() const;
     ~Type();
     int getSize() const;
+    bool isFloatType() const { return base_type == "float" || base_type == "double"; }
+    bool isIntType() const { return base_type == "int" || base_type == "char" || base_type == "short" || base_type == "long" || base_type == "bool"; }
 };
 
 struct Symbol {
@@ -314,6 +331,301 @@ void yyerror(const char*s) {
     cerr << "Parser Error at line " << yylineno << ": " << s << " near '" << yytext << "'" << endl;
 }
 
+std::vector<Type*> get_printf_specifier_types(const std::string& format_string) {
+    std::vector<Type*> types;
+    for (size_t i = 0; i < format_string.length(); ++i) {
+        if (format_string[i] == '%') {
+            if (i + 1 < format_string.length()) {
+                if (format_string[i+1] == '%') {
+                    i++; // Skip '%%'
+                    continue;
+                }
+                
+                // Check for %lf
+                if (i + 2 < format_string.length() && format_string.substr(i+1, 2) == "lf") {
+                    types.push_back(new Type("double")); // %lf expects double
+                    i += 2;
+                }
+                // Check for %d
+                else if (format_string[i+1] == 'd') {
+                    types.push_back(new Type("int"));
+                    i++;
+                }
+                // Check for %f
+                else if (format_string[i+1] == 'f') {
+                    // Note: C promotes floats to doubles in variadic functions
+                    types.push_back(new Type("double")); 
+                    i++;
+                }
+                // Check for %s
+                else if (format_string[i+1] == 's') {
+                    Type* t = new Type("char");
+                    t->pointer_level = 1; // %s expects char*
+                    types.push_back(t);
+                    i++;
+                }
+                // Check for %p
+                else if (format_string[i+1] == 'p') {
+                    Type* t = new Type("void");
+                    t->pointer_level = 1; // %p expects void*
+                    types.push_back(t);
+                    i++;
+                }
+            }
+        }
+    }
+    return types;
+}
+
+/**
+ * @brief Parses a scanf format string and returns a vector of expected pointer types.
+ */
+std::vector<Type*> get_scanf_specifier_types(const std::string& format_string) {
+    std::vector<Type*> types;
+    for (size_t i = 0; i < format_string.length(); ++i) {
+        if (format_string[i] == '%') {
+            if (i + 1 < format_string.length()) {
+                if (format_string[i+1] == '%') {
+                    i++; // Skip '%%'
+                    continue;
+                }
+
+                // Check for %lf
+                if (i + 2 < format_string.length() && format_string.substr(i+1, 2) == "lf") {
+                    Type* t = new Type("double");
+                    t->pointer_level = 1; // %lf expects double*
+                    types.push_back(t);
+                    i += 2;
+                }
+                // Check for %d
+                else if (format_string[i+1] == 'd') {
+                    Type* t = new Type("int");
+                    t->pointer_level = 1; // %d expects int*
+                    types.push_back(t);
+                    i++;
+                }
+                // Check for %f
+                else if (format_string[i+1] == 'f') {
+                    Type* t = new Type("float"); // %f expects float* (no promotion)
+                    t->pointer_level = 1;
+                    types.push_back(t);
+                    i++;
+                }
+                // Check for %s
+                else if (format_string[i+1] == 's') {
+                    Type* t = new Type("char");
+                    t->pointer_level = 1; // %s expects char*
+                    types.push_back(t);
+                    i++;
+                }
+                // Check for %p
+                else if (format_string[i+1] == 'p') {
+                    Type* t = new Type("void");
+                    t->pointer_level = 2; // %p expects void**
+                    types.push_back(t);
+                    i++;
+                }
+            }
+        }
+    }
+    return types;
+}
+
+
+/**
+ * @brief Performs semantic checks and TAC generation for function calls.
+ */
+ExprResult* handle_function_call(ExprResult* func_expr, ExprList* args) {
+    std::string func_name = func_expr->tac_var;
+    int num_params = args->size();
+    ExprResult* result = new ExprResult();
+
+    // --- Special Handling for printf ---
+    if (func_name == "printf") {
+        if (num_params == 0) {
+            yyerror("printf requires at least one argument (the format string)");
+        } else {
+            ExprResult* format_arg = args->at(0);
+            if (!format_arg->string_val.empty()) {
+                // Format string is a literal, we can check types
+                std::string format_string = format_arg->string_val;
+                std::vector<Type*> expected_types = get_printf_specifier_types(format_string);
+                int num_specifiers = expected_types.size();
+                int num_provided_args = num_params - 1;
+
+                if (num_specifiers != num_provided_args) {
+                    std::string err = "printf: " + std::to_string(num_specifiers) + 
+                                      " format specifiers given, but " + 
+                                      std::to_string(num_provided_args) + " arguments provided";
+                    yyerror(err.c_str());
+                } else {
+                    // Counts match, now check types
+                    for (int i = 0; i < num_specifiers; ++i) {
+                        Type* expected = expected_types[i];
+                        Type* provided = args->at(i + 1)->type;
+                        bool type_mismatch = false;
+
+                        // Check base type (with promotion rules)
+                        if (expected->base_type != provided->base_type) {
+                            // %d (int) can take char/short (promoted to int)
+                            if (expected->base_type == "int" && (provided->base_type == "char" || provided->base_type == "short")) {
+                                // OK
+                            }
+                            // %f/%lf (double) can take float (promoted to double)
+                            else if (expected->base_type == "double" && provided->base_type == "float") {
+                                // OK
+                            } else {
+                                type_mismatch = true;
+                            }
+                        }
+                        
+                        // Check pointer level
+                        if (expected->pointer_level != provided->pointer_level) {
+                            // %p (void*) can take any pointer
+                            if (expected->base_type == "void" && expected->pointer_level == 1 && provided->pointer_level > 0) {
+                                // OK
+                            }
+                            // %s (char*) can take (const char*)
+                            else if (expected->base_type == "char" && expected->pointer_level == 1 &&
+                                     provided->base_type == "char" && provided->pointer_level == 1) {
+                                // OK (ignoring const)
+                            }
+                            else {
+                                type_mismatch = true;
+                            }
+                        }
+
+                        if (type_mismatch) {
+                            std::string err = "printf: type mismatch for argument " + std::to_string(i + 2);
+                            yyerror(err.c_str());
+                        }
+                        
+                        delete expected; // Clean up the type we created
+                    }
+                }
+            }
+            // else: Format string is a variable, we can't check types at compile time.
+        }
+        result->type = new Type("int"); // printf returns an int
+    }
+    
+    // --- Special Handling for scanf ---
+    else if (func_name == "scanf") {
+        if (num_params == 0) {
+            yyerror("scanf requires at least one argument (the format string)");
+        } else {
+            ExprResult* format_arg = args->at(0);
+            if (!format_arg->string_val.empty()) {
+                // Format string is a literal, check types
+                std::string format_string = format_arg->string_val;
+                std::vector<Type*> expected_types = get_scanf_specifier_types(format_string);
+                int num_specifiers = expected_types.size();
+                int num_provided_args = num_params - 1;
+
+                if (num_specifiers != num_provided_args) {
+                    std::string err = "scanf: " + std::to_string(num_specifiers) + 
+                                      " format specifiers given, but " + 
+                                      std::to_string(num_provided_args) + " arguments provided";
+                    yyerror(err.c_str());
+                } else {
+                    // Counts match, now check types
+                    for (int i = 0; i < num_specifiers; ++i) {
+                        Type* expected = expected_types[i];
+                        Type* provided = args->at(i + 1)->type;
+
+                        // scanf requires exact pointer type matches
+                        bool type_mismatch = (expected->base_type != provided->base_type) ||
+                                             (expected->pointer_level != provided->pointer_level);
+
+                        if (type_mismatch) {
+                            std::string err = "scanf: type mismatch for argument " + std::to_string(i + 2) +
+                                              ". Argument must be a pointer matching the specifier.";
+                            yyerror(err.c_str());
+                        }
+                        
+                        delete expected; // Clean up
+                    }
+                }
+            } else {
+                // Can't check types, but at least check that they are all pointers
+                for (int i = 1; i < num_params; ++i) {
+                    if (args->at(i)->type->pointer_level == 0) {
+                        yyerror("scanf: argument after format string must be a pointer");
+                    }
+                }
+            }
+        }
+        result->type = new Type("int"); // scanf returns an int
+    }
+    
+    // --- Special Handling for malloc ---
+    else if (func_name == "malloc") {
+        if (num_params != 1) {
+            yyerror("malloc: takes exactly one argument");
+        }
+        // TODO: check that argument is an integer type
+        result->type = new Type("void"); // malloc returns void*
+        result->type->pointer_level = 1;
+    }
+
+    // --- Special Handling for free ---
+    else if (func_name == "free") {
+        if (num_params != 1) {
+            yyerror("free: takes exactly one argument");
+        }
+        if (args->at(0)->type->pointer_level == 0) {
+             yyerror("free: argument must be a pointer");
+        }
+        result->type = new Type("void"); // free returns void
+    }
+
+    // --- Default Function Call Handling ---
+    else {
+        Symbol* func_sym = lookup_symbol(func_name);
+        if (func_sym && func_sym->kind == SK_FUNCTION) {
+            // Found symbol, check parameters
+            if (func_sym->type->parameter_types.size() != (size_t)num_params) {
+                std::string err = "function '" + func_name + "': incorrect number of arguments (expected " +
+                                  std::to_string(func_sym->type->parameter_types.size()) +
+                                  ", got " + std::to_string(num_params) + ")";
+                yyerror(err.c_str());
+            }
+            // TODO: Add type checking for each parameter
+            result->type = new Type(*func_sym->type->return_type);
+        } else {
+            // Unknown function (e.g., implicit declaration)
+            // Default to returning int per C89 rules
+            result->type = new Type("int");
+        }
+    }
+
+    // --- TAC Generation (Common to all calls) ---
+    
+    // 1. Emit parameters in reverse order (C-style stack push)
+    for (auto it = args->rbegin(); it != args->rend(); ++it) {
+        tac_gen->emitParam((*it)->tac_var);
+    }
+    
+    // 2. Emit the call
+    std::string temp_var;
+    if (result->type->isFloatType()) {
+        temp_var = tac_gen->newFloatTemp();
+    } else {
+        temp_var = tac_gen->newIntTemp();
+    }
+    tac_gen->emitCall(temp_var, func_name, num_params);
+    
+    // 3. Store the result
+    result->tac_var = temp_var;
+    
+    // Clean up argument expressions
+    for (ExprResult* arg : *args) {
+        delete arg;
+    }
+    
+    return result;
+}
+
 %}
 
 %token CONST IF ELSE WHILE FOR RETURN BREAK CONTINUE GOTO SWITCH CASE DEFAULT DO SIZEOF
@@ -363,8 +675,6 @@ void yyerror(const char*s) {
 %type <initializer_item_list_ptr> initializer_list initializer_items
 %type <initializer_item_ptr> initializer
 %type <string_ptr> do_while_head
-%type <type_ptr> for_init_marker
-%type <string_ptr> for_cond_marker for_inc_marker
 
 %nonassoc IF_WITHOUT_ELSE
 %nonassoc ELSE
@@ -638,7 +948,11 @@ declaration
                                     sym->type->toString() + " (size: " + to_string(size) + " bytes)");
                 
                 if (sym->has_initializer && !sym->init_expr.empty()) {
-                    tac_gen->emitAssignment(sym->name, sym->init_expr);
+                    if (sym->type->isFloatType()) {
+                        tac_gen->emitFloatAssignment(sym->name, sym->init_expr);
+                    } else {
+                        tac_gen->emitIntAssignment(sym->name, sym->init_expr);
+                    }
                 }
                 
                 install_symbol(sym);
@@ -701,14 +1015,34 @@ init_declarator
     }
     
     // Store the initializer expression to emit later
-    sym->init_expr = expr->tac_var;  // Add this field to Symbol struct
-    sym->has_initializer = true;     // Add this field too
+    sym->init_expr = expr->tac_var;
+    sym->has_initializer = true;
+    
+    // Emit assignment with proper type annotation
+    if (sym->type->isFloatType()) {
+        if (expr->type->isFloatType()) {
+            tac_gen->emitFloatAssignment(sym->name, expr->tac_var);
+        } else {
+            // Float variable assigned with int value - convert
+            string temp = tac_gen->newFloatTemp();
+            tac_gen->emitIntToFloat(temp, expr->tac_var);
+            tac_gen->emitFloatAssignment(sym->name, temp);
+        }
+    } else {
+        if (expr->type->isFloatType()) {
+            // Int variable assigned with float value - convert and truncate
+            string temp = tac_gen->newIntTemp();
+            tac_gen->emitFloatToInt(temp, expr->tac_var);
+            tac_gen->emitIntAssignment(sym->name, temp);
+        } else {
+            tac_gen->emitIntAssignment(sym->name, expr->tac_var);
+        }
+    }
     
     delete expr;
     $$ = sym;
 }
     | declarator ASSIGN initializer_list {
-        // Add comment here too
         Symbol* sym = $1;
         std::vector<InitializerItem*>* initializers = $3;
         if (!sym->type->array_dimensions.empty()) {
@@ -718,7 +1052,6 @@ init_declarator
             }
         }
         
-        // TAC: Comment first
         tac_gen->emitComment("Variable declaration: " + sym->name + " : " + sym->type->toString());
         tac_gen->emitComment("Array initialization: " + sym->name);
         int index = 0;
@@ -1059,7 +1392,6 @@ selection_statement
           ExprResult* cond = $3;
           string false_label = tac_gen->newLabel();
           
-          // DON'T push to control_stack - use if_stack instead
           if_stack.push({false_label, ""});
           
           if (!cond->tac_var.empty()) {
@@ -1090,7 +1422,7 @@ selection_statement
 else_handler:
     /* empty */
     {
-        string false_label = if_stack.top().first;  // Use if_stack instead
+        string false_label = if_stack.top().first;
         if_stack.pop();
         tac_gen->emitLabel(false_label);
     }
@@ -1098,19 +1430,19 @@ else_handler:
     |
     ELSE
     {
-        string false_label = if_stack.top().first;  // Use if_stack
+        string false_label = if_stack.top().first;
         if_stack.pop();
         
         string end_label = tac_gen->newLabel();
         
-        if_stack.push({false_label, end_label});  // Push back with end_label
+        if_stack.push({false_label, end_label});
         
         tac_gen->emitGoto(end_label);
         tac_gen->emitLabel(false_label);
     }
     statement
     {
-        string end_label = if_stack.top().second;  // Use if_stack
+        string end_label = if_stack.top().second;
         if_stack.pop();
         tac_gen->emitLabel(end_label);
     }
@@ -1250,7 +1582,6 @@ jump_statement
     : GOTO identifier SEMICOLON
     {
         string label_name = string($2);
-        // Check if label is defined, if not, add to unresolved list
         if (g_labels.find(label_name) == g_labels.end()) {
             g_unresolved_gotos.push_back(label_name);
         }
@@ -1259,21 +1590,17 @@ jump_statement
     }
     | CONTINUE SEMICOLON
     {
-        // Check if we are inside a loop
         if (g_loop_depth == 0) {
             yyerror("continue statement not within a loop");
         } else {
-            // Jump to the continue label of the current loop
             tac_gen->emitGoto(control_stack.top().continue_label);
         }
     }
     | BREAK SEMICOLON
     {
-        // Check if we are inside a loop OR a switch
         if (g_loop_depth == 0 && g_switch_depth == 0) {
             yyerror("break statement not within loop or switch");
         } else {
-            // Jump to the break label of the current loop/switch
             tac_gen->emitGoto(control_stack.top().break_label);
         }
     }
@@ -1283,7 +1610,6 @@ jump_statement
             g_current_function->has_return = true;
             ExprResult* expr = $2;
             if (expr) {
-                // Check return type
                 if (g_current_function->type->return_type->base_type == "void") {
                     yyerror(("function '" + g_current_function->name + "' returns a value, but its return type is void").c_str());
                 }
@@ -1351,8 +1677,25 @@ assignment_expression
         } else {
             lhs->lvalue_symbol->dval = rhs->dval;
             
-            if (!rhs->tac_var.empty()) {
-                tac_gen->emitAssignment(lhs->lvalue_symbol->name, rhs->tac_var);
+            // Handle type conversion in assignment
+            if (lhs->type->isFloatType()) {
+                if (rhs->type->isFloatType()) {
+                    tac_gen->emitFloatAssignment(lhs->lvalue_symbol->name, rhs->tac_var);
+                } else {
+                    // Float variable assigned with int value
+                    string temp = tac_gen->newFloatTemp();
+                    tac_gen->emitIntToFloat(temp, rhs->tac_var);
+                    tac_gen->emitFloatAssignment(lhs->lvalue_symbol->name, temp);
+                }
+            } else {
+                if (rhs->type->isFloatType()) {
+                    // Int variable assigned with float value
+                    string temp = tac_gen->newIntTemp();
+                    tac_gen->emitFloatToInt(temp, rhs->tac_var);
+                    tac_gen->emitIntAssignment(lhs->lvalue_symbol->name, temp);
+                } else {
+                    tac_gen->emitIntAssignment(lhs->lvalue_symbol->name, rhs->tac_var);
+                }
             }
             
             $$ = new ExprResult(rhs->dval, rhs->type, nullptr);
@@ -1370,11 +1713,27 @@ assignment_expression
         } else {
             lhs->lvalue_symbol->dval += rhs->dval;
             
-            string temp = tac_gen->newTemp();
-            if (!rhs->tac_var.empty()) {
-                tac_gen->emit(temp, lhs->lvalue_symbol->name, "+", rhs->tac_var);
+            string temp;
+            if (lhs->type->isFloatType() || rhs->type->isFloatType()) {
+                temp = tac_gen->newFloatTemp();
+                string arg1 = lhs->lvalue_symbol->name;
+                string arg2 = rhs->tac_var;
+                if (lhs->type->isIntType() && rhs->type->isFloatType()) {
+                    string converted = tac_gen->newFloatTemp();
+                    tac_gen->emitIntToFloat(converted, lhs->lvalue_symbol->name);
+                    arg1 = converted;
+                } else if (lhs->type->isFloatType() && rhs->type->isIntType()) {
+                    string converted = tac_gen->newFloatTemp();
+                    tac_gen->emitIntToFloat(converted, rhs->tac_var);
+                    arg2 = converted;
+                }
+                tac_gen->emitFloatOp(temp, arg1, "+", arg2);
+                tac_gen->emitFloatAssignment(lhs->lvalue_symbol->name, temp);
+            } else {
+                temp = tac_gen->newIntTemp();
+                tac_gen->emitIntOp(temp, lhs->lvalue_symbol->name, "+", rhs->tac_var);
+                tac_gen->emitIntAssignment(lhs->lvalue_symbol->name, temp);
             }
-            tac_gen->emitAssignment(lhs->lvalue_symbol->name, temp);
             
             $$ = new ExprResult(lhs->lvalue_symbol->dval, lhs->type, nullptr);
             $$->tac_var = lhs->lvalue_symbol->name;
@@ -1391,11 +1750,27 @@ assignment_expression
         } else {
             lhs->lvalue_symbol->dval -= rhs->dval;
             
-            string temp = tac_gen->newTemp();
-            if (!rhs->tac_var.empty()) {
-                tac_gen->emit(temp, lhs->lvalue_symbol->name, "-", rhs->tac_var);
+            string temp;
+            if (lhs->type->isFloatType() || rhs->type->isFloatType()) {
+                temp = tac_gen->newFloatTemp();
+                string arg1 = lhs->lvalue_symbol->name;
+                string arg2 = rhs->tac_var;
+                if (lhs->type->isIntType() && rhs->type->isFloatType()) {
+                    string converted = tac_gen->newFloatTemp();
+                    tac_gen->emitIntToFloat(converted, lhs->lvalue_symbol->name);
+                    arg1 = converted;
+                } else if (lhs->type->isFloatType() && rhs->type->isIntType()) {
+                    string converted = tac_gen->newFloatTemp();
+                    tac_gen->emitIntToFloat(converted, rhs->tac_var);
+                    arg2 = converted;
+                }
+                tac_gen->emitFloatOp(temp, arg1, "-", arg2);
+                tac_gen->emitFloatAssignment(lhs->lvalue_symbol->name, temp);
+            } else {
+                temp = tac_gen->newIntTemp();
+                tac_gen->emitIntOp(temp, lhs->lvalue_symbol->name, "-", rhs->tac_var);
+                tac_gen->emitIntAssignment(lhs->lvalue_symbol->name, temp);
             }
-            tac_gen->emitAssignment(lhs->lvalue_symbol->name, temp);
             
             $$ = new ExprResult(lhs->lvalue_symbol->dval, lhs->type, nullptr);
             $$->tac_var = lhs->lvalue_symbol->name;
@@ -1412,11 +1787,27 @@ assignment_expression
         } else {
             lhs->lvalue_symbol->dval *= rhs->dval;
             
-            string temp = tac_gen->newTemp();
-            if (!rhs->tac_var.empty()) {
-                tac_gen->emit(temp, lhs->lvalue_symbol->name, "*", rhs->tac_var);
+            string temp;
+            if (lhs->type->isFloatType() || rhs->type->isFloatType()) {
+                temp = tac_gen->newFloatTemp();
+                string arg1 = lhs->lvalue_symbol->name;
+                string arg2 = rhs->tac_var;
+                if (lhs->type->isIntType() && rhs->type->isFloatType()) {
+                    string converted = tac_gen->newFloatTemp();
+                    tac_gen->emitIntToFloat(converted, lhs->lvalue_symbol->name);
+                    arg1 = converted;
+                } else if (lhs->type->isFloatType() && rhs->type->isIntType()) {
+                    string converted = tac_gen->newFloatTemp();
+                    tac_gen->emitIntToFloat(converted, rhs->tac_var);
+                    arg2 = converted;
+                }
+                tac_gen->emitFloatOp(temp, arg1, "*", arg2);
+                tac_gen->emitFloatAssignment(lhs->lvalue_symbol->name, temp);
+            } else {
+                temp = tac_gen->newIntTemp();
+                tac_gen->emitIntOp(temp, lhs->lvalue_symbol->name, "*", rhs->tac_var);
+                tac_gen->emitIntAssignment(lhs->lvalue_symbol->name, temp);
             }
-            tac_gen->emitAssignment(lhs->lvalue_symbol->name, temp);
             
             $$ = new ExprResult(lhs->lvalue_symbol->dval, lhs->type, nullptr);
             $$->tac_var = lhs->lvalue_symbol->name;
@@ -1433,11 +1824,27 @@ assignment_expression
         } else {
             lhs->lvalue_symbol->dval /= rhs->dval;
             
-            string temp = tac_gen->newTemp();
-            if (!rhs->tac_var.empty()) {
-                tac_gen->emit(temp, lhs->lvalue_symbol->name, "/", rhs->tac_var);
+            string temp;
+            if (lhs->type->isFloatType() || rhs->type->isFloatType()) {
+                temp = tac_gen->newFloatTemp();
+                string arg1 = lhs->lvalue_symbol->name;
+                string arg2 = rhs->tac_var;
+                if (lhs->type->isIntType() && rhs->type->isFloatType()) {
+                    string converted = tac_gen->newFloatTemp();
+                    tac_gen->emitIntToFloat(converted, lhs->lvalue_symbol->name);
+                    arg1 = converted;
+                } else if (lhs->type->isFloatType() && rhs->type->isIntType()) {
+                    string converted = tac_gen->newFloatTemp();
+                    tac_gen->emitIntToFloat(converted, rhs->tac_var);
+                    arg2 = converted;
+                }
+                tac_gen->emitFloatOp(temp, arg1, "/", arg2);
+                tac_gen->emitFloatAssignment(lhs->lvalue_symbol->name, temp);
+            } else {
+                temp = tac_gen->newIntTemp();
+                tac_gen->emitIntOp(temp, lhs->lvalue_symbol->name, "/", rhs->tac_var);
+                tac_gen->emitIntAssignment(lhs->lvalue_symbol->name, temp);
             }
-            tac_gen->emitAssignment(lhs->lvalue_symbol->name, temp);
             
             $$ = new ExprResult(lhs->lvalue_symbol->dval, lhs->type, nullptr);
             $$->tac_var = lhs->lvalue_symbol->name;
@@ -1450,33 +1857,51 @@ assignment_expression
     conditional_expression
     : logical_or_expression { $$ = $1; }
     | logical_or_expression '?' expression ':' conditional_expression {
-        // Ternary operator
         ExprResult* cond = $1;
         ExprResult* true_expr = $3;
         ExprResult* false_expr = $5;
         
         string false_label = tac_gen->newLabel();
         string end_label = tac_gen->newLabel();
-        string result_temp = tac_gen->newTemp();
+        string result_temp;
+        
+        if (true_expr->type->isFloatType() || false_expr->type->isFloatType()) {
+            result_temp = tac_gen->newFloatTemp();
+        } else {
+            result_temp = tac_gen->newIntTemp();
+        }
         
         if (!cond->tac_var.empty()) {
             tac_gen->emitIfFalseGoto(cond->tac_var, false_label);
         }
         
-        // True branch
         if (!true_expr->tac_var.empty()) {
-            tac_gen->emitAssignment(result_temp, true_expr->tac_var);
+            if (true_expr->type->isFloatType()) {
+                tac_gen->emitFloatAssignment(result_temp, true_expr->tac_var);
+            } else {
+                tac_gen->emitIntAssignment(result_temp, true_expr->tac_var);
+            }
         }
         tac_gen->emitGoto(end_label);
         
-        // False branch
         tac_gen->emitLabel(false_label);
         if (!false_expr->tac_var.empty()) {
-            tac_gen->emitAssignment(result_temp, false_expr->tac_var);
+            if (false_expr->type->isFloatType()) {
+                tac_gen->emitFloatAssignment(result_temp, false_expr->tac_var);
+            } else {
+                tac_gen->emitIntAssignment(result_temp, false_expr->tac_var);
+            }
         }
         tac_gen->emitLabel(end_label);
         
-        $$ = new ExprResult(cond->dval ? true_expr->dval : false_expr->dval, true_expr->type);
+        Type* result_type;
+        if (true_expr->type->isFloatType() || false_expr->type->isFloatType()) {
+            result_type = new Type("float");
+        } else {
+            result_type = new Type("int");
+        }
+        
+        $$ = new ExprResult(cond->dval ? true_expr->dval : false_expr->dval, result_type);
         $$->tac_var = result_temp;
         
         delete cond;
@@ -1488,9 +1913,9 @@ assignment_expression
 logical_or_expression
     : logical_and_expression { $$ = $1; }
     | logical_or_expression OR_OP logical_and_expression {
-        string temp = tac_gen->newTemp();
+        string temp = tac_gen->newIntTemp();
         if (!$1->tac_var.empty() && !$3->tac_var.empty()) {
-            tac_gen->emit(temp, $1->tac_var, "||", $3->tac_var);
+            tac_gen->emitIntOp(temp, $1->tac_var, "||", $3->tac_var);
         }
         
         $$ = new ExprResult($1->dval || $3->dval, new Type("bool"));
@@ -1503,9 +1928,9 @@ logical_or_expression
 logical_and_expression
     : bitwise_or_expression { $$ = $1; }
     | logical_and_expression AND_OP bitwise_or_expression {
-        string temp = tac_gen->newTemp();
+        string temp = tac_gen->newIntTemp();
         if (!$1->tac_var.empty() && !$3->tac_var.empty()) {
-            tac_gen->emit(temp, $1->tac_var, "&&", $3->tac_var);
+            tac_gen->emitIntOp(temp, $1->tac_var, "&&", $3->tac_var);
         }
         
         $$ = new ExprResult($1->dval && $3->dval, new Type("bool"));
@@ -1518,9 +1943,9 @@ logical_and_expression
 bitwise_or_expression
     : bitwise_xor_expression { $$ = $1; }
     | bitwise_or_expression '|' bitwise_xor_expression {
-        string temp = tac_gen->newTemp();
+        string temp = tac_gen->newIntTemp();
         if (!$1->tac_var.empty() && !$3->tac_var.empty()) {
-            tac_gen->emit(temp, $1->tac_var, "|", $3->tac_var);
+            tac_gen->emitIntOp(temp, $1->tac_var, "|", $3->tac_var);
         }
         
         $$ = new ExprResult((double)((int)$1->dval | (int)$3->dval), new Type("int"));
@@ -1533,9 +1958,9 @@ bitwise_or_expression
 bitwise_xor_expression
     : bitwise_and_expression { $$ = $1; }
     | bitwise_xor_expression '^' bitwise_and_expression {
-        string temp = tac_gen->newTemp();
+        string temp = tac_gen->newIntTemp();
         if (!$1->tac_var.empty() && !$3->tac_var.empty()) {
-            tac_gen->emit(temp, $1->tac_var, "^", $3->tac_var);
+            tac_gen->emitIntOp(temp, $1->tac_var, "^", $3->tac_var);
         }
         
         $$ = new ExprResult((double)((int)$1->dval ^ (int)$3->dval), new Type("int"));
@@ -1548,9 +1973,9 @@ bitwise_xor_expression
 bitwise_and_expression
     : equality_expression { $$ = $1; }
     | bitwise_and_expression '&' equality_expression {
-        string temp = tac_gen->newTemp();
+        string temp = tac_gen->newIntTemp();
         if (!$1->tac_var.empty() && !$3->tac_var.empty()) {
-            tac_gen->emit(temp, $1->tac_var, "&", $3->tac_var);
+            tac_gen->emitIntOp(temp, $1->tac_var, "&", $3->tac_var);
         }
         
         $$ = new ExprResult((double)((int)$1->dval & (int)$3->dval), new Type("int"));
@@ -1563,9 +1988,9 @@ bitwise_and_expression
 equality_expression
     : relational_expression { $$ = $1; }
     | equality_expression EQ_OP relational_expression {
-        string temp = tac_gen->newTemp();
+        string temp = tac_gen->newIntTemp();
         if (!$1->tac_var.empty() && !$3->tac_var.empty()) {
-            tac_gen->emit(temp, $1->tac_var, "==", $3->tac_var);
+            tac_gen->emitIntOp(temp, $1->tac_var, "==", $3->tac_var);
         }
         
         $$ = new ExprResult($1->dval == $3->dval, new Type("bool"));
@@ -1574,9 +1999,9 @@ equality_expression
         delete $3;
     }
     | equality_expression NE_OP relational_expression {
-        string temp = tac_gen->newTemp();
+        string temp = tac_gen->newIntTemp();
         if (!$1->tac_var.empty() && !$3->tac_var.empty()) {
-            tac_gen->emit(temp, $1->tac_var, "!=", $3->tac_var);
+            tac_gen->emitIntOp(temp, $1->tac_var, "!=", $3->tac_var);
         }
         
         $$ = new ExprResult($1->dval != $3->dval, new Type("bool"));
@@ -1589,9 +2014,9 @@ equality_expression
 relational_expression
     : shift_expression { $$ = $1; }
     | relational_expression '<' shift_expression {
-        string temp = tac_gen->newTemp();
+        string temp = tac_gen->newIntTemp();
         if (!$1->tac_var.empty() && !$3->tac_var.empty()) {
-            tac_gen->emit(temp, $1->tac_var, "<", $3->tac_var);
+            tac_gen->emitIntOp(temp, $1->tac_var, "<", $3->tac_var);
         }
         
         $$ = new ExprResult($1->dval < $3->dval, new Type("bool"));
@@ -1600,9 +2025,9 @@ relational_expression
         delete $3;
     }
     | relational_expression '>' shift_expression {
-        string temp = tac_gen->newTemp();
+        string temp = tac_gen->newIntTemp();
         if (!$1->tac_var.empty() && !$3->tac_var.empty()) {
-            tac_gen->emit(temp, $1->tac_var, ">", $3->tac_var);
+            tac_gen->emitIntOp(temp, $1->tac_var, ">", $3->tac_var);
         }
         
         $$ = new ExprResult($1->dval > $3->dval, new Type("bool"));
@@ -1611,9 +2036,9 @@ relational_expression
         delete $3;
     }
     | relational_expression LE_OP shift_expression {
-        string temp = tac_gen->newTemp();
+        string temp = tac_gen->newIntTemp();
         if (!$1->tac_var.empty() && !$3->tac_var.empty()) {
-            tac_gen->emit(temp, $1->tac_var, "<=", $3->tac_var);
+            tac_gen->emitIntOp(temp, $1->tac_var, "<=", $3->tac_var);
         }
         
         $$ = new ExprResult($1->dval <= $3->dval, new Type("bool"));
@@ -1622,9 +2047,9 @@ relational_expression
         delete $3;
     }
     | relational_expression GE_OP shift_expression {
-        string temp = tac_gen->newTemp();
+        string temp = tac_gen->newIntTemp();
         if (!$1->tac_var.empty() && !$3->tac_var.empty()) {
-            tac_gen->emit(temp, $1->tac_var, ">=", $3->tac_var);
+            tac_gen->emitIntOp(temp, $1->tac_var, ">=", $3->tac_var);
         }
         
         $$ = new ExprResult($1->dval >= $3->dval, new Type("bool"));
@@ -1637,9 +2062,9 @@ relational_expression
 shift_expression
     : additive_expression { $$ = $1; }
     | shift_expression LSHIFT_OP additive_expression {
-        string temp = tac_gen->newTemp();
+        string temp = tac_gen->newIntTemp();
         if (!$1->tac_var.empty() && !$3->tac_var.empty()) {
-            tac_gen->emit(temp, $1->tac_var, "<<", $3->tac_var);
+            tac_gen->emitIntOp(temp, $1->tac_var, "<<", $3->tac_var);
         }
         
         $$ = new ExprResult((double)((int)$1->dval << (int)$3->dval), new Type("int"));
@@ -1648,9 +2073,9 @@ shift_expression
         delete $3;
     }
     | shift_expression RSHIFT_OP additive_expression {
-        string temp = tac_gen->newTemp();
+        string temp = tac_gen->newIntTemp();
         if (!$1->tac_var.empty() && !$3->tac_var.empty()) {
-            tac_gen->emit(temp, $1->tac_var, ">>", $3->tac_var);
+            tac_gen->emitIntOp(temp, $1->tac_var, ">>", $3->tac_var);
         }
         
         $$ = new ExprResult((double)((int)$1->dval >> (int)$3->dval), new Type("int"));
@@ -1663,23 +2088,69 @@ shift_expression
 additive_expression
     : multiplicative_expression { $$ = $1; }
     | additive_expression '+' multiplicative_expression {
-        string temp = tac_gen->newTemp();
-        if (!$1->tac_var.empty() && !$3->tac_var.empty()) {
-            tac_gen->emit(temp, $1->tac_var, "+", $3->tac_var);
+        string temp;
+        Type* result_type;
+        
+        if ($1->type->isFloatType() || $3->type->isFloatType()) {
+            temp = tac_gen->newFloatTemp();
+            result_type = new Type("float");
+            
+            string arg1 = $1->tac_var;
+            string arg2 = $3->tac_var;
+            
+            if ($1->type->isIntType() && $3->type->isFloatType()) {
+                string converted = tac_gen->newFloatTemp();
+                tac_gen->emitIntToFloat(converted, $1->tac_var);
+                arg1 = converted;
+            } else if ($1->type->isFloatType() && $3->type->isIntType()) {
+                string converted = tac_gen->newFloatTemp();
+                tac_gen->emitIntToFloat(converted, $3->tac_var);
+                arg2 = converted;
+            }
+            
+            tac_gen->emitFloatOp(temp, arg1, "+", arg2);
+        } else {
+            temp = tac_gen->newIntTemp();
+            result_type = new Type("int");
+            tac_gen->emitIntOp(temp, $1->tac_var, "+", $3->tac_var);
         }
         
-        $$ = new ExprResult($1->dval + $3->dval, $1->type);
+        $$ = new ExprResult($1->dval + $3->dval, result_type);
         $$->tac_var = temp;
+        delete $1;
         delete $3;
     }
     | additive_expression '-' multiplicative_expression {
-        string temp = tac_gen->newTemp();
-        if (!$1->tac_var.empty() && !$3->tac_var.empty()) {
-            tac_gen->emit(temp, $1->tac_var, "-", $3->tac_var);
+        string temp;
+        Type* result_type;
+        
+        if ($1->type->isFloatType() || $3->type->isFloatType()) {
+            temp = tac_gen->newFloatTemp();
+            result_type = new Type("float");
+            
+            string arg1 = $1->tac_var;
+            string arg2 = $3->tac_var;
+            
+            if ($1->type->isIntType() && $3->type->isFloatType()) {
+                string converted = tac_gen->newFloatTemp();
+                tac_gen->emitIntToFloat(converted, $1->tac_var);
+                arg1 = converted;
+            } else if ($1->type->isFloatType() && $3->type->isIntType()) {
+                string converted = tac_gen->newFloatTemp();
+                tac_gen->emitIntToFloat(converted, $3->tac_var);
+                arg2 = converted;
+            }
+            
+            tac_gen->emitFloatOp(temp, arg1, "-", arg2);
+        } else {
+            temp = tac_gen->newIntTemp();
+            result_type = new Type("int");
+            tac_gen->emitIntOp(temp, $1->tac_var, "-", $3->tac_var);
         }
         
-        $$ = new ExprResult($1->dval - $3->dval, $1->type);
+        $$ = new ExprResult($1->dval - $3->dval, result_type);
         $$->tac_var = temp;
+        delete $1;
         delete $3;
     }
     ;
@@ -1687,33 +2158,82 @@ additive_expression
 multiplicative_expression
     : cast_expression { $$ = $1; }
     | multiplicative_expression '*' cast_expression {
-        string temp = tac_gen->newTemp();
-        if (!$1->tac_var.empty() && !$3->tac_var.empty()) {
-            tac_gen->emit(temp, $1->tac_var, "*", $3->tac_var);
+        string temp;
+        Type* result_type;
+        
+        if ($1->type->isFloatType() || $3->type->isFloatType()) {
+            temp = tac_gen->newFloatTemp();
+            result_type = new Type("float");
+            
+            string arg1 = $1->tac_var;
+            string arg2 = $3->tac_var;
+            
+            if ($1->type->isIntType() && $3->type->isFloatType()) {
+                string converted = tac_gen->newFloatTemp();
+                tac_gen->emitIntToFloat(converted, $1->tac_var);
+                arg1 = converted;
+            } else if ($1->type->isFloatType() && $3->type->isIntType()) {
+                string converted = tac_gen->newFloatTemp();
+                tac_gen->emitIntToFloat(converted, $3->tac_var);
+                arg2 = converted;
+            }
+            
+            tac_gen->emitFloatOp(temp, arg1, "*", arg2);
+        } else {
+            temp = tac_gen->newIntTemp();
+            result_type = new Type("int");
+            tac_gen->emitIntOp(temp, $1->tac_var, "*", $3->tac_var);
         }
         
-        $$ = new ExprResult($1->dval * $3->dval, $1->type);
+        $$ = new ExprResult($1->dval * $3->dval, result_type);
         $$->tac_var = temp;
+        delete $1;
         delete $3;
     }
     | multiplicative_expression '/' cast_expression {
-        string temp = tac_gen->newTemp();
-        if (!$1->tac_var.empty() && !$3->tac_var.empty()) {
-            tac_gen->emit(temp, $1->tac_var, "/", $3->tac_var);
+        string temp;
+        Type* result_type;
+        
+        if ($1->type->isFloatType() || $3->type->isFloatType()) {
+            temp = tac_gen->newFloatTemp();
+            result_type = new Type("float");
+            
+            string arg1 = $1->tac_var;
+            string arg2 = $3->tac_var;
+            
+            if ($1->type->isIntType() && $3->type->isFloatType()) {
+                string converted = tac_gen->newFloatTemp();
+                tac_gen->emitIntToFloat(converted, $1->tac_var);
+                arg1 = converted;
+            } else if ($1->type->isFloatType() && $3->type->isIntType()) {
+                string converted = tac_gen->newFloatTemp();
+                tac_gen->emitIntToFloat(converted, $3->tac_var);
+                arg2 = converted;
+            }
+            
+            tac_gen->emitFloatOp(temp, arg1, "/", arg2);
+        } else {
+            temp = tac_gen->newIntTemp();
+            result_type = new Type("int");
+            tac_gen->emitIntOp(temp, $1->tac_var, "/", $3->tac_var);
         }
         
-        $$ = new ExprResult($1->dval / $3->dval, $1->type);
+        $$ = new ExprResult($1->dval / $3->dval, result_type);
         $$->tac_var = temp;
+        delete $1;
         delete $3;
     }
     | multiplicative_expression '%' cast_expression {
-        string temp = tac_gen->newTemp();
-        if (!$1->tac_var.empty() && !$3->tac_var.empty()) {
-            tac_gen->emit(temp, $1->tac_var, "%", $3->tac_var);
+        if ($1->type->isFloatType() || $3->type->isFloatType()) {
+            yyerror("invalid operands to binary % (have 'float' and 'float')");
+            $$ = new ExprResult(0.0, new Type("int"));
+        } else {
+            string temp = tac_gen->newIntTemp();
+            tac_gen->emitIntOp(temp, $1->tac_var, "%", $3->tac_var);
+            
+            $$ = new ExprResult(fmod($1->dval, $3->dval), new Type("int"));
+            $$->tac_var = temp;
         }
-        
-        $$ = new ExprResult((double)((int)$1->dval % (int)$3->dval), new Type("int"));
-        $$->tac_var = temp;
         delete $1;
         delete $3;
     }
@@ -1722,10 +2242,21 @@ multiplicative_expression
 cast_expression
     : unary_expression { $$ = $1; }
     | LPAREN type_name RPAREN cast_expression {
-        // TAC: Type cast
-        string temp = tac_gen->newTemp();
-        if (!$4->tac_var.empty()) {
-            tac_gen->emitCast(temp, $4->tac_var, $2->toString());
+        string temp;
+        if ($2->isFloatType()) {
+            temp = tac_gen->newFloatTemp();
+            if ($4->type->isIntType()) {
+                tac_gen->emitIntToFloat(temp, $4->tac_var);
+            } else {
+                tac_gen->emitFloatAssignment(temp, $4->tac_var);
+            }
+        } else {
+            temp = tac_gen->newIntTemp();
+            if ($4->type->isFloatType()) {
+                tac_gen->emitFloatToInt(temp, $4->tac_var);
+            } else {
+                tac_gen->emitIntAssignment(temp, $4->tac_var);
+            }
         }
         
         $4->type = $2;
@@ -1737,13 +2268,19 @@ cast_expression
 unary_expression
     : postfix_expression { $$ = $1; }
     | INC_OP unary_expression {
-        // Pre-increment
         if ($2->lvalue_symbol) {
             $2->lvalue_symbol->dval++;
             
-            string temp = tac_gen->newTemp();
-            tac_gen->emit(temp, $2->lvalue_symbol->name, "+", "1");
-            tac_gen->emitAssignment($2->lvalue_symbol->name, temp);
+            string temp;
+            if ($2->type->isFloatType()) {
+                temp = tac_gen->newFloatTemp();
+                tac_gen->emitFloatOp(temp, $2->lvalue_symbol->name, "+", "1.0");
+                tac_gen->emitFloatAssignment($2->lvalue_symbol->name, temp);
+            } else {
+                temp = tac_gen->newIntTemp();
+                tac_gen->emitIntOp(temp, $2->lvalue_symbol->name, "+", "1");
+                tac_gen->emitIntAssignment($2->lvalue_symbol->name, temp);
+            }
             
             $$ = new ExprResult($2->lvalue_symbol->dval, $2->type, $2->lvalue_symbol);
             $$->tac_var = $2->lvalue_symbol->name;
@@ -1754,13 +2291,19 @@ unary_expression
         delete $2;
     }
     | DEC_OP unary_expression {
-        // Pre-decrement
         if ($2->lvalue_symbol) {
             $2->lvalue_symbol->dval--;
             
-            string temp = tac_gen->newTemp();
-            tac_gen->emit(temp, $2->lvalue_symbol->name, "-", "1");
-            tac_gen->emitAssignment($2->lvalue_symbol->name, temp);
+            string temp;
+            if ($2->type->isFloatType()) {
+                temp = tac_gen->newFloatTemp();
+                tac_gen->emitFloatOp(temp, $2->lvalue_symbol->name, "-", "1.0");
+                tac_gen->emitFloatAssignment($2->lvalue_symbol->name, temp);
+            } else {
+                temp = tac_gen->newIntTemp();
+                tac_gen->emitIntOp(temp, $2->lvalue_symbol->name, "-", "1");
+                tac_gen->emitIntAssignment($2->lvalue_symbol->name, temp);
+            }
             
             $$ = new ExprResult($2->lvalue_symbol->dval, $2->type, $2->lvalue_symbol);
             $$->tac_var = $2->lvalue_symbol->name;
@@ -1771,8 +2314,7 @@ unary_expression
         delete $2;
     }
     | '&' cast_expression {
-        // Address-of operator
-        string temp = tac_gen->newTemp();
+        string temp = tac_gen->newIntTemp();
         if ($2->lvalue_symbol) {
             tac_gen->emitAddressOf(temp, $2->lvalue_symbol->name);
         }
@@ -1784,19 +2326,25 @@ unary_expression
         delete $2;
     }
     | '*' cast_expression {
-        // Dereference operator
         if ($2->type->pointer_level == 0) {
             yyerror("Cannot dereference a non-pointer type");
             $$ = new ExprResult(0.0, nullptr, nullptr);
         } else {
-            string temp = tac_gen->newTemp();
+            string temp;
+            Type* base_type = new Type(*$2->type);
+            base_type->pointer_level--;
+            
+            if (base_type->isFloatType()) {
+                temp = tac_gen->newFloatTemp();
+            } else {
+                temp = tac_gen->newIntTemp();
+            }
+            
             if (!$2->tac_var.empty()) {
                 tac_gen->emitDereference(temp, $2->tac_var);
             }
             
-            Type* new_type = new Type(*$2->type);
-            new_type->pointer_level--;
-            $$ = new ExprResult($2->dval, new_type, $2->lvalue_symbol);
+            $$ = new ExprResult($2->dval, base_type, $2->lvalue_symbol);
             $$->tac_var = temp;
         }
         delete $2;
@@ -1805,9 +2353,13 @@ unary_expression
         $$ = $2; 
     }
     | '-' cast_expression { 
-        string temp = tac_gen->newTemp();
-        if (!$2->tac_var.empty()) {
-            tac_gen->emitUnary(temp, "-", $2->tac_var);
+        string temp;
+        if ($2->type->isFloatType()) {
+            temp = tac_gen->newFloatTemp();
+            tac_gen->emitFloatUnary(temp, "-", $2->tac_var);
+        } else {
+            temp = tac_gen->newIntTemp();
+            tac_gen->emitIntUnary(temp, "-", $2->tac_var);
         }
         
         $$ = new ExprResult(-$2->dval, $2->type, nullptr); 
@@ -1815,19 +2367,24 @@ unary_expression
         delete $2; 
     }
     | '~' cast_expression { 
-        string temp = tac_gen->newTemp();
-        if (!$2->tac_var.empty()) {
-            tac_gen->emitUnary(temp, "~", $2->tac_var);
+        if ($2->type->isFloatType()) {
+            yyerror("invalid operand type for ~ (float)");
+            $$ = new ExprResult(0.0, new Type("int"));
+        } else {
+            string temp = tac_gen->newIntTemp();
+            tac_gen->emitIntUnary(temp, "~", $2->tac_var);
+            
+            $$ = new ExprResult((double)(~((int)$2->dval)), new Type("int")); 
+            $$->tac_var = temp;
         }
-        
-        $$ = new ExprResult((double)(~((int)$2->dval)), new Type("int")); 
-        $$->tac_var = temp;
         delete $2; 
     }
     | '!' cast_expression { 
-        string temp = tac_gen->newTemp();
-        if (!$2->tac_var.empty()) {
-            tac_gen->emitUnary(temp, "!", $2->tac_var);
+        string temp = tac_gen->newIntTemp();
+        if ($2->type->isFloatType()) {
+            tac_gen->emitFloatUnary(temp, "!", $2->tac_var);
+        } else {
+            tac_gen->emitIntUnary(temp, "!", $2->tac_var);
         }
         
         $$ = new ExprResult(!$2->dval, new Type("bool")); 
@@ -1835,14 +2392,12 @@ unary_expression
         delete $2; 
     }
     | SIZEOF unary_expression {
-        // Sizeof operator
         tac_gen->emitComment("sizeof expression");
         $$ = new ExprResult(4.0, new Type("int"), nullptr);
         $$->tac_var = "4";
         delete $2;
     }
     | SIZEOF LPAREN type_name RPAREN {
-        // Sizeof type
         tac_gen->emitComment("sizeof(" + $3->toString() + ")");
         $$ = new ExprResult(4.0, new Type("int"), nullptr);
         $$->tac_var = "4";
@@ -1853,8 +2408,13 @@ unary_expression
 postfix_expression
     : primary_expression { $$ = $1; }
     | postfix_expression LBRACKET expression RBRACKET {
-        // Array subscripting
-        string temp = tac_gen->newTemp();
+        string temp;
+        if ($1->type->isFloatType()) {
+            temp = tac_gen->newFloatTemp();
+        } else {
+            temp = tac_gen->newIntTemp();
+        }
+        
         if ($1->lvalue_symbol && !$3->tac_var.empty()) {
             tac_gen->emitArrayAccess(temp, $1->lvalue_symbol->name, $3->tac_var);
         }
@@ -1863,36 +2423,18 @@ postfix_expression
         $$->tac_var = temp;
         delete $3;
     }
-    | postfix_expression LPAREN RPAREN {
-        // Function call with no arguments
-        string temp = tac_gen->newTemp();
-        if ($1->lvalue_symbol) {
-            tac_gen->emitCall(temp, $1->lvalue_symbol->name, 0);
-        }
-        
-        $$ = new ExprResult(0.0, new Type("int"), nullptr);
-        $$->tac_var = temp;
+| postfix_expression LPAREN RPAREN 
+    {
+        ExprList* empty_args = new ExprList();
+        $$ = handle_function_call($1, empty_args);
         delete $1;
+        delete empty_args;
     }
-    | postfix_expression LPAREN argument_list RPAREN {
-        // Function call with arguments
-        vector<ExprResult*>* args = $3;
-        
-        for (ExprResult* arg : *args) {
-            if (!arg->tac_var.empty()) {
-                tac_gen->emitParam(arg->tac_var);
-            }
-        }
-        
-        string temp = tac_gen->newTemp();
-        if ($1->lvalue_symbol) {
-            tac_gen->emitCall(temp, $1->lvalue_symbol->name, args->size());
-        }
-        
-        $$ = new ExprResult(0.0, new Type("int"), nullptr);
-        $$->tac_var = temp;
+    | postfix_expression LPAREN argument_list RPAREN 
+    {
+        $$ = handle_function_call($1, $3);
         delete $1;
-        delete args;
+        delete $3;
     }
     | postfix_expression DOT identifier {
         ExprResult* struct_expr = $1;
@@ -1908,8 +2450,13 @@ postfix_expression
         } else {
             Symbol* member_sym = struct_type->members.at(member_name);
             
-            // TAC: Member access
-            string temp = tac_gen->newTemp();
+            string temp;
+            if (member_sym->type->isFloatType()) {
+                temp = tac_gen->newFloatTemp();
+            } else {
+                temp = tac_gen->newIntTemp();
+            }
+            
             if (struct_expr->lvalue_symbol) {
                 tac_gen->emitMemberAccess(temp, struct_expr->lvalue_symbol->name, member_name);
             }
@@ -1942,8 +2489,13 @@ postfix_expression
             } else {
                 Symbol* member_sym = struct_type->members.at(member_name);
                 
-                // TAC: Pointer member access
-                string temp = tac_gen->newTemp();
+                string temp;
+                if (member_sym->type->isFloatType()) {
+                    temp = tac_gen->newFloatTemp();
+                } else {
+                    temp = tac_gen->newIntTemp();
+                }
+                
                 if (!ptr_expr->tac_var.empty()) {
                     tac_gen->emitPointerMemberAccess(temp, ptr_expr->tac_var, member_name);
                 }
@@ -1959,12 +2511,22 @@ postfix_expression
     }
     | postfix_expression INC_OP {
         if ($1->lvalue_symbol) {
-            string old_value = tac_gen->newTemp();
-            tac_gen->emitAssignment(old_value, $1->lvalue_symbol->name);
-            
-            string temp = tac_gen->newTemp();
-            tac_gen->emit(temp, $1->lvalue_symbol->name, "+", "1");
-            tac_gen->emitAssignment($1->lvalue_symbol->name, temp);
+            string old_value;
+            if ($1->type->isFloatType()) {
+                old_value = tac_gen->newFloatTemp();
+                tac_gen->emitFloatAssignment(old_value, $1->lvalue_symbol->name);
+                
+                string temp = tac_gen->newFloatTemp();
+                tac_gen->emitFloatOp(temp, $1->lvalue_symbol->name, "+", "1.0");
+                tac_gen->emitFloatAssignment($1->lvalue_symbol->name, temp);
+            } else {
+                old_value = tac_gen->newIntTemp();
+                tac_gen->emitIntAssignment(old_value, $1->lvalue_symbol->name);
+                
+                string temp = tac_gen->newIntTemp();
+                tac_gen->emitIntOp(temp, $1->lvalue_symbol->name, "+", "1");
+                tac_gen->emitIntAssignment($1->lvalue_symbol->name, temp);
+            }
             
             $$ = new ExprResult($1->lvalue_symbol->dval, $1->type, $1->lvalue_symbol);
             $$->tac_var = old_value;
@@ -1977,12 +2539,22 @@ postfix_expression
     }
     | postfix_expression DEC_OP {
         if ($1->lvalue_symbol) {
-            string old_value = tac_gen->newTemp();
-            tac_gen->emitAssignment(old_value, $1->lvalue_symbol->name);
-            
-            string temp = tac_gen->newTemp();
-            tac_gen->emit(temp, $1->lvalue_symbol->name, "-", "1");
-            tac_gen->emitAssignment($1->lvalue_symbol->name, temp);
+            string old_value;
+            if ($1->type->isFloatType()) {
+                old_value = tac_gen->newFloatTemp();
+                tac_gen->emitFloatAssignment(old_value, $1->lvalue_symbol->name);
+                
+                string temp = tac_gen->newFloatTemp();
+                tac_gen->emitFloatOp(temp, $1->lvalue_symbol->name, "-", "1.0");
+                tac_gen->emitFloatAssignment($1->lvalue_symbol->name, temp);
+            } else {
+                old_value = tac_gen->newIntTemp();
+                tac_gen->emitIntAssignment(old_value, $1->lvalue_symbol->name);
+                
+                string temp = tac_gen->newIntTemp();
+                tac_gen->emitIntOp(temp, $1->lvalue_symbol->name, "-", "1");
+                tac_gen->emitIntAssignment($1->lvalue_symbol->name, temp);
+            }
             
             $$ = new ExprResult($1->lvalue_symbol->dval, $1->type, $1->lvalue_symbol);
             $$->tac_var = old_value;
@@ -2023,14 +2595,20 @@ primary_expression
         $$->tac_var = "'" + string(1, $1[1]) + "'";
         free($1); 
     }
-    | STRING_LITERAL { 
-        string str_label = tac_gen->newLabel();
-        tac_gen->emitComment("String literal: " + string($1));
+    | STRING_LITERAL
+    {
+        $$ = new ExprResult();
+        $$->type = new Type("char", TK_BASE);
+        $$->type->pointer_level = 1;
+        $$->type->is_const = true;
         
-        $$ = new ExprResult(0.0, new Type("char")); 
-        $$->type->pointer_level = 1; 
-        $$->tac_var = str_label;
-        free($1); 
+        $$->string_val = std::string($1).substr(1, std::string($1).length() - 2); 
+        
+        $$->tac_var = tac_gen->newIntTemp(); 
+        
+        tac_gen->emitAssignment($$->tac_var, std::string($1)); 
+        
+        free($1);
     }
     | LPAREN expression RPAREN { $$ = $2; }
     | lambda_expression { $$ = $1; }
@@ -2196,6 +2774,14 @@ std::string TACGenerator::newTemp() {
     return "t" + std::to_string(temp_count++);
 }
 
+std::string TACGenerator::newIntTemp() {
+    return "i" + std::to_string(temp_count++) + " [int]";
+}
+
+std::string TACGenerator::newFloatTemp() {
+    return "f" + std::to_string(temp_count++) + " [float]";
+}
+
 std::string TACGenerator::newLabel() {
     return "L" + std::to_string(label_count++);
 }
@@ -2205,13 +2791,41 @@ void TACGenerator::emit(const std::string& result, const std::string& arg1,
     outfile << result << " = " << arg1 << " " << op << " " << arg2 << std::endl;
 }
 
+void TACGenerator::emitIntOp(const std::string& result, const std::string& arg1, 
+                        const std::string& op, const std::string& arg2) {
+    outfile << result << " = " << arg1 << " " << op << " " << arg2 << "  [INT]" << std::endl;
+}
+
+void TACGenerator::emitFloatOp(const std::string& result, const std::string& arg1, 
+                        const std::string& op, const std::string& arg2) {
+    outfile << result << " = " << arg1 << " " << op << " " << arg2 << "  [FLOAT]" << std::endl;
+}
+
 void TACGenerator::emitAssignment(const std::string& result, const std::string& value) {
     outfile << result << " = " << value << std::endl;
+}
+
+void TACGenerator::emitIntAssignment(const std::string& result, const std::string& value) {
+    outfile << result << " = " << value << "  [int]" << std::endl;
+}
+
+void TACGenerator::emitFloatAssignment(const std::string& result, const std::string& value) {
+    outfile << result << " = " << value << "  [float]" << std::endl;
 }
 
 void TACGenerator::emitUnary(const std::string& result, const std::string& op, 
                              const std::string& arg) {
     outfile << result << " = " << op << arg << std::endl;
+}
+
+void TACGenerator::emitIntUnary(const std::string& result, const std::string& op, 
+                             const std::string& arg) {
+    outfile << result << " = " << op << arg << "  [INT]" << std::endl;
+}
+
+void TACGenerator::emitFloatUnary(const std::string& result, const std::string& op, 
+                             const std::string& arg) {
+    outfile << result << " = " << op << arg << "  [FLOAT]" << std::endl;
 }
 
 void TACGenerator::emitLabel(const std::string& label) {
@@ -2297,12 +2911,28 @@ void TACGenerator::emitCast(const std::string& result, const std::string& value,
     outfile << result << " = (" << type << ") " << value << std::endl;
 }
 
+void TACGenerator::emitIntToFloat(const std::string& result, const std::string& int_val) {
+    outfile << result << " = (float)" << int_val << "  [INT->FLOAT]" << std::endl;
+}
+
+void TACGenerator::emitFloatToInt(const std::string& result, const std::string& float_val) {
+    outfile << result << " = (int)" << float_val << "  [FLOAT->INT]" << std::endl;
+}
+
 void TACGenerator::emitComment(const std::string& comment) {
     outfile << "// " << comment << std::endl;
 }
 
 void TACGenerator::emitRaw(const std::string& instruction) {
     outfile << instruction << std::endl;
+}
+
+std::string TACGenerator::getOperationType(const std::string& type1, const std::string& type2) {
+    if (type1.find("float") != std::string::npos || type2.find("float") != std::string::npos ||
+        type1.find("double") != std::string::npos || type2.find("double") != std::string::npos) {
+        return "FLOAT";
+    }
+    return "INT";
 }
 
 int main(int argc, char** argv) {
