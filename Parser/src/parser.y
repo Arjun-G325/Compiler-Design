@@ -3335,7 +3335,73 @@ std::string TACGenerator::getOperationType(const std::string& type1, const std::
     return "INT";
 }
 
+void initialize_builtin_functions() {
+    // printf: int printf(const char* format, ...)
+    Symbol* printf_sym = new Symbol();
+    printf_sym->name = "printf";
+    printf_sym->kind = SK_FUNCTION;
+    printf_sym->type = new Type("", TK_FUNCTION);
+    printf_sym->type->return_type = new Type("int");
+    
+    // First parameter: const char* format
+    Type* format_type = new Type("char");
+    format_type->is_const = true;
+    format_type->pointer_level = 1;
+    printf_sym->type->parameter_types.push_back(format_type);
+    
+    // Variadic function (indicated by empty parameter name or special handling)
+    install_symbol(printf_sym);
+
+    // scanf: int scanf(const char* format, ...)
+    Symbol* scanf_sym = new Symbol();
+    scanf_sym->name = "scanf";
+    scanf_sym->kind = SK_FUNCTION;
+    scanf_sym->type = new Type("", TK_FUNCTION);
+    scanf_sym->type->return_type = new Type("int");
+    
+    // First parameter: const char* format
+    Type* scanf_format_type = new Type("char");
+    scanf_format_type->is_const = true;
+    scanf_format_type->pointer_level = 1;
+    scanf_sym->type->parameter_types.push_back(scanf_format_type);
+    
+    install_symbol(scanf_sym);
+
+    // malloc: void* malloc(size_t size)
+    Symbol* malloc_sym = new Symbol();
+    malloc_sym->name = "malloc";
+    malloc_sym->kind = SK_FUNCTION;
+    malloc_sym->type = new Type("", TK_FUNCTION);
+    malloc_sym->type->return_type = new Type("void");
+    malloc_sym->type->return_type->pointer_level = 1;
+    
+    // Parameter: size_t size (we'll use unsigned int for simplicity)
+    Type* size_type = new Type("unsigned int");
+    malloc_sym->type->parameter_types.push_back(size_type);
+    
+    install_symbol(malloc_sym);
+
+    // free: void free(void* ptr)
+    Symbol* free_sym = new Symbol();
+    free_sym->name = "free";
+    free_sym->kind = SK_FUNCTION;
+    free_sym->type = new Type("", TK_FUNCTION);
+    free_sym->type->return_type = new Type("void");
+    
+    // Parameter: void* ptr
+    Type* ptr_type = new Type("void");
+    ptr_type->pointer_level = 1;
+    free_sym->type->parameter_types.push_back(ptr_type);
+    
+    install_symbol(free_sym);
+}
+
+// Modify the main function to call the initialization
 int main(int argc, char** argv) {
+    // Initialize global scope and built-in functions
+    enter_scope();
+    initialize_builtin_functions();
+    
     if (argc > 1) {
         yyin = fopen(argv[1], "r");
         if (!yyin) {
@@ -3347,5 +3413,6 @@ int main(int argc, char** argv) {
     if (tac_gen) {
         delete tac_gen;
     }
+    exit_scope(); // Clean up global scope
     return 0;
 }
