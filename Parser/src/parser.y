@@ -1074,6 +1074,13 @@ init_declarator
     | declarator ASSIGN assignment_expression {
         Symbol* sym = $1;
         ExprResult* expr = $3;
+        if ($1->type->pointer_level != $3->type->pointer_level) {
+            
+            // You can add more complex checks here (e.g., for base types, void*, etc.)
+            // But the pointer level check is the one failing in your case.
+
+            yyerror("Type mismatch in initialization: pointer levels differ");
+        }
         sym->dval = expr->dval;
         
         if (g_current_base_type && g_current_base_type->base_type == "auto") {
@@ -1749,6 +1756,24 @@ assignment_expression
     
     ExprResult* rhs = $3;
     
+    // Pointer level compatibility check
+    if (lhs->type && rhs->type) {
+        if (lhs->type->pointer_level != rhs->type->pointer_level) {
+            // Allow assignment of 0 to any pointer (NULL assignment)
+            if (!(rhs->is_const_expr && rhs->dval == 0.0 && lhs->type->pointer_level > 0)) {
+                yyerror(("Assignment between incompatible pointer levels: " + 
+                        to_string(lhs->type->pointer_level) + " vs " + 
+                        to_string(rhs->type->pointer_level)).c_str());
+            }
+        }
+        
+        // Check const correctness for pointers
+        if (lhs->type->pointer_level > 0 && lhs->type->is_const && 
+            !rhs->type->is_const) {
+            yyerror("Cannot assign non-const pointer to const pointer");
+        }
+    }
+    
     if (lhs->is_array_element) {
         // For array assignment, use the pre-calculated address from lhs
         if (lhs->array_address.empty()) {
@@ -1763,18 +1788,24 @@ assignment_expression
         }
     }
     else if (lhs->is_struct_member) {
-        // For structure member assignment, use the pre-calculated address
-        if (lhs->member_address.empty()) {
-            yyerror("Invalid structure member assignment");
-            $$ = new ExprResult(0.0, nullptr, nullptr);
-        } else {
-            // Direct store to structure member
-            tac_gen->emitRaw("*" + lhs->member_address + " = " + rhs->tac_var);
-            
-            $$ = new ExprResult(rhs->dval, rhs->type, nullptr);
-            $$->tac_var = rhs->tac_var;
-        }
+    // For structure member assignment
+    if (lhs->struct_base_symbol && !lhs->member_name.empty()) {
+        // Use direct member access for assignment
+        tac_gen->emitAssignment(lhs->struct_base_symbol->name + "." + lhs->member_name, rhs->tac_var);
+        
+        $$ = new ExprResult(rhs->dval, rhs->type, nullptr);
+        $$->tac_var = rhs->tac_var;
+    } else if (!lhs->member_address.empty()) {
+        // Use pre-calculated address
+        tac_gen->emitRaw("*" + lhs->member_address + " = " + rhs->tac_var);
+        
+        $$ = new ExprResult(rhs->dval, rhs->type, nullptr);
+        $$->tac_var = rhs->tac_var;
+    } else {
+        yyerror("Invalid structure member assignment");
+        $$ = new ExprResult(0.0, nullptr, nullptr);
     }
+}
     else if (!lhs->lvalue_symbol) {
         yyerror("lvalue required as left operand of assignment");
         $$ = new ExprResult(0.0, nullptr, nullptr);
@@ -1807,153 +1838,183 @@ assignment_expression
     delete rhs;
 }
     | unary_expression ADD_ASSIGN assignment_expression {
-        ExprResult* lhs = $1;
-        ExprResult* rhs = $3;
-        if (!lhs->lvalue_symbol) {
-            yyerror("lvalue required as left operand of assignment");
-            $$ = new ExprResult(0.0, nullptr, nullptr);
-        } else {
-            lhs->lvalue_symbol->dval += rhs->dval;
-            
-            string temp;
-            if (lhs->type->isFloatType() || rhs->type->isFloatType()) {
-                temp = tac_gen->newFloatTemp();
-                string arg1 = lhs->lvalue_symbol->name;
-                string arg2 = rhs->tac_var;
-                if (lhs->type->isIntType() && rhs->type->isFloatType()) {
-                    string converted = tac_gen->newFloatTemp();
-                    tac_gen->emitIntToFloat(converted, lhs->lvalue_symbol->name);
-                    arg1 = converted;
-                } else if (lhs->type->isFloatType() && rhs->type->isIntType()) {
-                    string converted = tac_gen->newFloatTemp();
-                    tac_gen->emitIntToFloat(converted, rhs->tac_var);
-                    arg2 = converted;
-                }
-                tac_gen->emitFloatOp(temp, arg1, "+", arg2);
-                tac_gen->emitFloatAssignment(lhs->lvalue_symbol->name, temp);
-            } else {
-                temp = tac_gen->newIntTemp();
-                tac_gen->emitIntOp(temp, lhs->lvalue_symbol->name, "+", rhs->tac_var);
-                tac_gen->emitIntAssignment(lhs->lvalue_symbol->name, temp);
-            }
-            
-            $$ = new ExprResult(lhs->lvalue_symbol->dval, lhs->type, nullptr);
-            $$->tac_var = lhs->lvalue_symbol->name;
+    ExprResult* lhs = $1;
+    ExprResult* rhs = $3;
+    
+    // Check for pointer arithmetic validity
+    if (lhs->type->pointer_level > 0) {
+        if (rhs->type->pointer_level > 0) {
+            yyerror("Invalid pointer arithmetic operation");
         }
-        delete lhs;
-        delete rhs;
+        // Pointer arithmetic (+=) is allowed with integers
     }
+    
+    if (!lhs->lvalue_symbol) {
+        yyerror("lvalue required as left operand of assignment");
+        $$ = new ExprResult(0.0, nullptr, nullptr);
+    } else {
+        lhs->lvalue_symbol->dval += rhs->dval;
+        
+        string temp;
+        if (lhs->type->isFloatType() || rhs->type->isFloatType()) {
+            temp = tac_gen->newFloatTemp();
+            string arg1 = lhs->lvalue_symbol->name;
+            string arg2 = rhs->tac_var;
+            if (lhs->type->isIntType() && rhs->type->isFloatType()) {
+                string converted = tac_gen->newFloatTemp();
+                tac_gen->emitIntToFloat(converted, lhs->lvalue_symbol->name);
+                arg1 = converted;
+            } else if (lhs->type->isFloatType() && rhs->type->isIntType()) {
+                string converted = tac_gen->newFloatTemp();
+                tac_gen->emitIntToFloat(converted, rhs->tac_var);
+                arg2 = converted;
+            }
+            tac_gen->emitFloatOp(temp, arg1, "+", arg2);
+            tac_gen->emitFloatAssignment(lhs->lvalue_symbol->name, temp);
+        } else {
+            temp = tac_gen->newIntTemp();
+            tac_gen->emitIntOp(temp, lhs->lvalue_symbol->name, "+", rhs->tac_var);
+            tac_gen->emitIntAssignment(lhs->lvalue_symbol->name, temp);
+        }
+        
+        $$ = new ExprResult(lhs->lvalue_symbol->dval, lhs->type, nullptr);
+        $$->tac_var = lhs->lvalue_symbol->name;
+    }
+    delete lhs;
+    delete rhs;
+}
     | unary_expression SUB_ASSIGN assignment_expression {
-        ExprResult* lhs = $1;
-        ExprResult* rhs = $3;
-        if (!lhs->lvalue_symbol) {
-            yyerror("lvalue required as left operand of assignment");
-            $$ = new ExprResult(0.0, nullptr, nullptr);
-        } else {
-            lhs->lvalue_symbol->dval -= rhs->dval;
-            
-            string temp;
-            if (lhs->type->isFloatType() || rhs->type->isFloatType()) {
-                temp = tac_gen->newFloatTemp();
-                string arg1 = lhs->lvalue_symbol->name;
-                string arg2 = rhs->tac_var;
-                if (lhs->type->isIntType() && rhs->type->isFloatType()) {
-                    string converted = tac_gen->newFloatTemp();
-                    tac_gen->emitIntToFloat(converted, lhs->lvalue_symbol->name);
-                    arg1 = converted;
-                } else if (lhs->type->isFloatType() && rhs->type->isIntType()) {
-                    string converted = tac_gen->newFloatTemp();
-                    tac_gen->emitIntToFloat(converted, rhs->tac_var);
-                    arg2 = converted;
-                }
-                tac_gen->emitFloatOp(temp, arg1, "-", arg2);
-                tac_gen->emitFloatAssignment(lhs->lvalue_symbol->name, temp);
-            } else {
-                temp = tac_gen->newIntTemp();
-                tac_gen->emitIntOp(temp, lhs->lvalue_symbol->name, "-", rhs->tac_var);
-                tac_gen->emitIntAssignment(lhs->lvalue_symbol->name, temp);
-            }
-            
-            $$ = new ExprResult(lhs->lvalue_symbol->dval, lhs->type, nullptr);
-            $$->tac_var = lhs->lvalue_symbol->name;
+    ExprResult* lhs = $1;
+    ExprResult* rhs = $3;
+    
+    // Check for pointer arithmetic validity
+    if (lhs->type->pointer_level > 0) {
+        if (rhs->type->pointer_level > 0) {
+            yyerror("Invalid pointer arithmetic operation");
         }
-        delete lhs;
-        delete rhs;
+        // Pointer arithmetic (-=) is allowed with integers
     }
+    
+    if (!lhs->lvalue_symbol) {
+        yyerror("lvalue required as left operand of assignment");
+        $$ = new ExprResult(0.0, nullptr, nullptr);
+    } else {
+        lhs->lvalue_symbol->dval -= rhs->dval;
+        
+        string temp;
+        if (lhs->type->isFloatType() || rhs->type->isFloatType()) {
+            temp = tac_gen->newFloatTemp();
+            string arg1 = lhs->lvalue_symbol->name;
+            string arg2 = rhs->tac_var;
+            if (lhs->type->isIntType() && rhs->type->isFloatType()) {
+                string converted = tac_gen->newFloatTemp();
+                tac_gen->emitIntToFloat(converted, lhs->lvalue_symbol->name);
+                arg1 = converted;
+            } else if (lhs->type->isFloatType() && rhs->type->isIntType()) {
+                string converted = tac_gen->newFloatTemp();
+                tac_gen->emitIntToFloat(converted, rhs->tac_var);
+                arg2 = converted;
+            }
+            tac_gen->emitFloatOp(temp, arg1, "-", arg2);
+            tac_gen->emitFloatAssignment(lhs->lvalue_symbol->name, temp);
+        } else {
+            temp = tac_gen->newIntTemp();
+            tac_gen->emitIntOp(temp, lhs->lvalue_symbol->name, "-", rhs->tac_var);
+            tac_gen->emitIntAssignment(lhs->lvalue_symbol->name, temp);
+        }
+        
+        $$ = new ExprResult(lhs->lvalue_symbol->dval, lhs->type, nullptr);
+        $$->tac_var = lhs->lvalue_symbol->name;
+    }
+    delete lhs;
+    delete rhs;
+}
     | unary_expression MUL_ASSIGN assignment_expression {
-        ExprResult* lhs = $1;
-        ExprResult* rhs = $3;
-        if (!lhs->lvalue_symbol) {
-            yyerror("lvalue required as left operand of assignment");
-            $$ = new ExprResult(0.0, nullptr, nullptr);
-        } else {
-            lhs->lvalue_symbol->dval *= rhs->dval;
-            
-            string temp;
-            if (lhs->type->isFloatType() || rhs->type->isFloatType()) {
-                temp = tac_gen->newFloatTemp();
-                string arg1 = lhs->lvalue_symbol->name;
-                string arg2 = rhs->tac_var;
-                if (lhs->type->isIntType() && rhs->type->isFloatType()) {
-                    string converted = tac_gen->newFloatTemp();
-                    tac_gen->emitIntToFloat(converted, lhs->lvalue_symbol->name);
-                    arg1 = converted;
-                } else if (lhs->type->isFloatType() && rhs->type->isIntType()) {
-                    string converted = tac_gen->newFloatTemp();
-                    tac_gen->emitIntToFloat(converted, rhs->tac_var);
-                    arg2 = converted;
-                }
-                tac_gen->emitFloatOp(temp, arg1, "*", arg2);
-                tac_gen->emitFloatAssignment(lhs->lvalue_symbol->name, temp);
-            } else {
-                temp = tac_gen->newIntTemp();
-                tac_gen->emitIntOp(temp, lhs->lvalue_symbol->name, "*", rhs->tac_var);
-                tac_gen->emitIntAssignment(lhs->lvalue_symbol->name, temp);
-            }
-            
-            $$ = new ExprResult(lhs->lvalue_symbol->dval, lhs->type, nullptr);
-            $$->tac_var = lhs->lvalue_symbol->name;
-        }
-        delete lhs;
-        delete rhs;
+    ExprResult* lhs = $1;
+    ExprResult* rhs = $3;
+    
+    // Check for invalid pointer operations
+    if (lhs->type->pointer_level > 0) {
+        yyerror("Invalid operation on pointer type");
     }
+    
+    if (!lhs->lvalue_symbol) {
+        yyerror("lvalue required as left operand of assignment");
+        $$ = new ExprResult(0.0, nullptr, nullptr);
+    } else {
+        lhs->lvalue_symbol->dval *= rhs->dval;
+        
+        string temp;
+        if (lhs->type->isFloatType() || rhs->type->isFloatType()) {
+            temp = tac_gen->newFloatTemp();
+            string arg1 = lhs->lvalue_symbol->name;
+            string arg2 = rhs->tac_var;
+            if (lhs->type->isIntType() && rhs->type->isFloatType()) {
+                string converted = tac_gen->newFloatTemp();
+                tac_gen->emitIntToFloat(converted, lhs->lvalue_symbol->name);
+                arg1 = converted;
+            } else if (lhs->type->isFloatType() && rhs->type->isIntType()) {
+                string converted = tac_gen->newFloatTemp();
+                tac_gen->emitIntToFloat(converted, rhs->tac_var);
+                arg2 = converted;
+            }
+            tac_gen->emitFloatOp(temp, arg1, "*", arg2);
+            tac_gen->emitFloatAssignment(lhs->lvalue_symbol->name, temp);
+        } else {
+            temp = tac_gen->newIntTemp();
+            tac_gen->emitIntOp(temp, lhs->lvalue_symbol->name, "*", rhs->tac_var);
+            tac_gen->emitIntAssignment(lhs->lvalue_symbol->name, temp);
+        }
+        
+        $$ = new ExprResult(lhs->lvalue_symbol->dval, lhs->type, nullptr);
+        $$->tac_var = lhs->lvalue_symbol->name;
+    }
+    delete lhs;
+    delete rhs;
+}
     | unary_expression DIV_ASSIGN assignment_expression {
-        ExprResult* lhs = $1;
-        ExprResult* rhs = $3;
-        if (!lhs->lvalue_symbol) {
-            yyerror("lvalue required as left operand of assignment");
-            $$ = new ExprResult(0.0, nullptr, nullptr);
-        } else {
-            lhs->lvalue_symbol->dval /= rhs->dval;
-            
-            string temp;
-            if (lhs->type->isFloatType() || rhs->type->isFloatType()) {
-                temp = tac_gen->newFloatTemp();
-                string arg1 = lhs->lvalue_symbol->name;
-                string arg2 = rhs->tac_var;
-                if (lhs->type->isIntType() && rhs->type->isFloatType()) {
-                    string converted = tac_gen->newFloatTemp();
-                    tac_gen->emitIntToFloat(converted, lhs->lvalue_symbol->name);
-                    arg1 = converted;
-                } else if (lhs->type->isFloatType() && rhs->type->isIntType()) {
-                    string converted = tac_gen->newFloatTemp();
-                    tac_gen->emitIntToFloat(converted, rhs->tac_var);
-                    arg2 = converted;
-                }
-                tac_gen->emitFloatOp(temp, arg1, "/", arg2);
-                tac_gen->emitFloatAssignment(lhs->lvalue_symbol->name, temp);
-            } else {
-                temp = tac_gen->newIntTemp();
-                tac_gen->emitIntOp(temp, lhs->lvalue_symbol->name, "/", rhs->tac_var);
-                tac_gen->emitIntAssignment(lhs->lvalue_symbol->name, temp);
-            }
-            
-            $$ = new ExprResult(lhs->lvalue_symbol->dval, lhs->type, nullptr);
-            $$->tac_var = lhs->lvalue_symbol->name;
-        }
-        delete lhs;
-        delete rhs;
+    ExprResult* lhs = $1;
+    ExprResult* rhs = $3;
+    
+    // Check for invalid pointer operations
+    if (lhs->type->pointer_level > 0) {
+        yyerror("Invalid operation on pointer type");
     }
+    
+    if (!lhs->lvalue_symbol) {
+        yyerror("lvalue required as left operand of assignment");
+        $$ = new ExprResult(0.0, nullptr, nullptr);
+    } else {
+        lhs->lvalue_symbol->dval /= rhs->dval;
+        
+        string temp;
+        if (lhs->type->isFloatType() || rhs->type->isFloatType()) {
+            temp = tac_gen->newFloatTemp();
+            string arg1 = lhs->lvalue_symbol->name;
+            string arg2 = rhs->tac_var;
+            if (lhs->type->isIntType() && rhs->type->isFloatType()) {
+                string converted = tac_gen->newFloatTemp();
+                tac_gen->emitIntToFloat(converted, lhs->lvalue_symbol->name);
+                arg1 = converted;
+            } else if (lhs->type->isFloatType() && rhs->type->isIntType()) {
+                string converted = tac_gen->newFloatTemp();
+                tac_gen->emitIntToFloat(converted, rhs->tac_var);
+                arg2 = converted;
+            }
+            tac_gen->emitFloatOp(temp, arg1, "/", arg2);
+            tac_gen->emitFloatAssignment(lhs->lvalue_symbol->name, temp);
+        } else {
+            temp = tac_gen->newIntTemp();
+            tac_gen->emitIntOp(temp, lhs->lvalue_symbol->name, "/", rhs->tac_var);
+            tac_gen->emitIntAssignment(lhs->lvalue_symbol->name, temp);
+        }
+        
+        $$ = new ExprResult(lhs->lvalue_symbol->dval, lhs->type, nullptr);
+        $$->tac_var = lhs->lvalue_symbol->name;
+    }
+    delete lhs;
+    delete rhs;
+}
     ;
 
     conditional_expression
@@ -2416,41 +2477,62 @@ unary_expression
         delete $2;
     }
     | '&' cast_expression {
-        string temp = tac_gen->newIntTemp();
+    string temp = tac_gen->newIntTemp();
+    
+    // Check if we can take address
+    if (!$2->lvalue_symbol && !$2->is_array_element && !$2->is_struct_member) {
+        yyerror("Cannot take address of non-lvalue expression");
+        $$ = new ExprResult(0.0, nullptr, nullptr);
+    } else {
         if ($2->lvalue_symbol) {
             tac_gen->emitAddressOf(temp, $2->lvalue_symbol->name);
+        } else if ($2->is_array_element && !$2->array_address.empty()) {
+            // Array element address is already calculated
+            tac_gen->emitAssignment(temp, $2->array_address);
+        } else if ($2->is_struct_member && !$2->member_address.empty()) {
+            // Struct member address is already calculated  
+            tac_gen->emitAssignment(temp, $2->member_address);
         }
         
         Type* new_type = new Type(*$2->type);
         new_type->pointer_level++;
         $$ = new ExprResult(0.0, new_type, nullptr);
         $$->tac_var = temp;
-        delete $2;
     }
+    delete $2;
+}
     | '*' cast_expression {
-        if ($2->type->pointer_level == 0) {
-            yyerror("Cannot dereference a non-pointer type");
-            $$ = new ExprResult(0.0, nullptr, nullptr);
+    if ($2->type->pointer_level == 0) {
+        yyerror("Cannot dereference a non-pointer type");
+        $$ = new ExprResult(0.0, nullptr, nullptr);
+    } else if ($2->type->pointer_level < 1) {
+        yyerror("Cannot dereference - insufficient pointer level");
+        $$ = new ExprResult(0.0, nullptr, nullptr);
+    } else {
+        string temp;
+        Type* base_type = new Type(*$2->type);
+        base_type->pointer_level--;
+        
+        if (base_type->isFloatType()) {
+            temp = tac_gen->newFloatTemp();
         } else {
-            string temp;
-            Type* base_type = new Type(*$2->type);
-            base_type->pointer_level--;
-            
-            if (base_type->isFloatType()) {
-                temp = tac_gen->newFloatTemp();
-            } else {
-                temp = tac_gen->newIntTemp();
-            }
-            
-            if (!$2->tac_var.empty()) {
-                tac_gen->emitDereference(temp, $2->tac_var);
-            }
-            
-            $$ = new ExprResult($2->dval, base_type, $2->lvalue_symbol);
-            $$->tac_var = temp;
+            temp = tac_gen->newIntTemp();
         }
-        delete $2;
+        
+        if (!$2->tac_var.empty()) {
+            tac_gen->emitDereference(temp, $2->tac_var);
+        }
+        
+        $$ = new ExprResult($2->dval, base_type, nullptr);
+        $$->tac_var = temp;
+        
+        // For dereferenced pointers, we can treat them as lvalues for further assignment
+        if ($2->type->pointer_level == 1) {
+            $$->lvalue_symbol = $2->lvalue_symbol; // May need adjustment
+        }
     }
+    delete $2;
+}
     | '+' cast_expression { 
         $$ = $2; 
     }
