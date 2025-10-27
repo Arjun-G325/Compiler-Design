@@ -1462,7 +1462,54 @@ statement
     | labeled_statement
     ;
 
-expression_statement: expression_opt SEMICOLON;
+expression_statement: 
+    expression_opt SEMICOLON 
+    | function_call_statement SEMICOLON
+    ;
+
+function_call_statement:
+    identifier LPAREN RPAREN 
+    {
+        // Create ExprResult from identifier
+        ExprResult* func_expr = new ExprResult();
+        func_expr->tac_var = string($1);
+        Symbol* sym = lookup_symbol(string($1));
+        if (sym) {
+            func_expr->type = sym->type;
+            func_expr->lvalue_symbol = sym;
+        } else {
+            func_expr->type = new Type("int"); // Default type for unknown functions
+        }
+        
+        ExprList* empty_args = new ExprList();
+        ExprResult* result = handle_function_call(func_expr, empty_args);
+        // Discard the result for standalone function calls
+        delete result;
+        delete empty_args;
+        delete func_expr;
+        free($1);
+    }
+    | identifier LPAREN argument_list RPAREN 
+    {
+        // Create ExprResult from identifier
+        ExprResult* func_expr = new ExprResult();
+        func_expr->tac_var = string($1);
+        Symbol* sym = lookup_symbol(string($1));
+        if (sym) {
+            func_expr->type = sym->type;
+            func_expr->lvalue_symbol = sym;
+        } else {
+            func_expr->type = new Type("int"); // Default type for unknown functions
+        }
+        
+        ExprResult* result = handle_function_call(func_expr, $3);
+        // Discard the result for standalone function calls
+        delete result;
+        delete $3;
+        delete func_expr;
+        free($1);
+    }
+    ;
 
 expression_opt
     : expression { $$ = $1; }
@@ -2665,18 +2712,30 @@ postfix_expression
     delete array_expr;
     delete index_expr;
 }
-| postfix_expression LPAREN RPAREN 
+    | postfix_expression LPAREN RPAREN 
     {
-        ExprList* empty_args = new ExprList();
-        $$ = handle_function_call($1, empty_args);
+        // Check if the postfix_expression is an identifier (function name)
+        if ($1->lvalue_symbol && $1->lvalue_symbol->kind == SK_FUNCTION) {
+            ExprList* empty_args = new ExprList();
+            $$ = handle_function_call($1, empty_args);
+            delete empty_args;
+        } else {
+            yyerror("Called object is not a function");
+            $$ = new ExprResult(0.0, new Type("error"), nullptr);
+        }
         delete $1;
-        delete empty_args;
     }
     | postfix_expression LPAREN argument_list RPAREN 
     {
-        $$ = handle_function_call($1, $3);
+        // Check if the postfix_expression is an identifier (function name)
+        if ($1->lvalue_symbol && $1->lvalue_symbol->kind == SK_FUNCTION) {
+            $$ = handle_function_call($1, $3);
+        } else {
+            yyerror("Called object is not a function");
+            $$ = new ExprResult(0.0, new Type("error"), nullptr);
+            delete $3;
+        }
         delete $1;
-        delete $3;
     }
     | postfix_expression DOT identifier {
     ExprResult* struct_expr = $1;
@@ -2821,11 +2880,12 @@ postfix_expression
     ;
 
 primary_expression
-    : identifier {
+        :identifier {
         Symbol* sym = lookup_symbol(string($1));
         if (!sym) {
-            yyerror(("'" + string($1) + "' undeclared").c_str());
-            $$ = new ExprResult(0.0, new Type("error"), nullptr);
+            // Check if this might be a function call (will be handled in postfix_expression)
+            $$ = new ExprResult(0.0, new Type("int"), nullptr); // Default type
+            $$->tac_var = string($1);
         } else {
             $$ = new ExprResult(sym->dval, sym->type, sym);
             $$->tac_var = sym->name;
