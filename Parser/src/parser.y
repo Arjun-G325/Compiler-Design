@@ -51,11 +51,18 @@ public:
     void emitReturnVoid();
     void emitFunctionBegin(const std::string& function_name);
     void emitFunctionEnd(const std::string& function_name);
-    
+    void emitMemberAddress(const std::string& result, const std::string& struct_var, 
+                                    const std::string& member);
     // Array operations
-    void emitArrayAccess(const std::string& result, const std::string& array, const std::string& index);
-    void emitArrayStore(const std::string& array, const std::string& index, const std::string& value);
-    
+    void emitArrayAccess(const std::string& result, const std::string& array,const std::string& index, int element_size);
+    void emitArrayStore(const std::string& array, const std::string& index, const std::string& value, int element_size);
+    void emitArrayAddress(const std::string& result, const std::string& array, 
+                                   const std::string& index, int element_size);
+    void emitMultiArrayAddress(const std::string& result, const std::string& array, 
+                                        const std::vector<std::string>& indices, 
+                                        const std::vector<int>& dimensions, int element_size);
+    void emitMultiArrayAccess(const std::string& result, const std::string& array, const std::vector<std::string>& indices, const std::vector<int>& dimensions, int element_size);
+    void emitMultiArrayStore(const std::string& array, const std::vector<std::string>& indices,const std::string& value,const std::vector<int>& dimensions, int element_size);
     // Pointer operations
     void emitAddressOf(const std::string& result, const std::string& var);
     void emitDereference(const std::string& result, const std::string& ptr);
@@ -95,15 +102,31 @@ typedef std::vector<MemberDef*> MemberDefList;
     enum AccessSpecifier { AS_PUBLIC, AS_PRIVATE, AS_PROTECTED };
 
 struct ExprResult {
-        double dval;
-        Type* type;
-        Symbol* lvalue_symbol;
-        bool is_const_expr;
-        std::string tac_var;  // TAC variable name
-        std::string string_val;
-ExprResult(double v = 0.0, Type* t = nullptr, Symbol* s = nullptr)
-            : dval(v), type(t), lvalue_symbol(s), is_const_expr(false), tac_var("") {}
-    };
+    double dval;
+    Type* type;
+    Symbol* lvalue_symbol;
+    bool is_const_expr;
+    std::string tac_var;
+    std::string string_val;
+    
+    // Array access information
+    bool is_array_element;
+    Symbol* array_base_symbol;
+    std::vector<std::string> array_indices;
+    std::vector<int> array_dimensions;
+    std::string array_address;
+    
+    // Structure member access information
+    bool is_struct_member;
+    Symbol* struct_base_symbol;
+    std::string member_name;
+    std::string member_address;
+    
+    ExprResult(double v = 0.0, Type* t = nullptr, Symbol* s = nullptr)
+        : dval(v), type(t), lvalue_symbol(s), is_const_expr(false), tac_var(""),
+          is_array_element(false), array_base_symbol(nullptr), array_address(""),
+          is_struct_member(false), struct_base_symbol(nullptr), member_name(""), member_address("") {}
+};
 
 struct InitializerItem {
         bool is_list;
@@ -245,6 +268,13 @@ extern int yylineno;
 extern char* yytext;
 extern FILE* yyin;
 void yyerror(const char* s);
+// Add this helper function in the parser code
+void handleMultiDimArrayInitialization(const std::string& array_name,
+                                     std::vector<InitializerItem*>* initializers,
+                                     const std::vector<int>& dimensions,
+                                     int element_size,
+                                     std::vector<int> current_indices,
+                                     int current_dim);
 
 Type::Type(string base, TypeKind k) : kind(k), base_type(base), is_const(false), is_unsigned(false), pointer_level(0), return_type(nullptr) {}
 
@@ -273,7 +303,8 @@ if (kind == TK_FUNCTION && return_type) {
     return desc;
 }
 
-
+// Add to global variables section
+bool g_parsing_lhs_of_assignment = false;
 stack<map<string, Symbol*>> symbol_table;
 map<string, Type*> type_table;
 Symbol* g_current_function = nullptr;
@@ -331,6 +362,48 @@ void install_symbol(Symbol* sym) {
 
 void yyerror(const char*s) {
     cerr << "Parser Error at line " << yylineno << ": " << s << " near '" << yytext << "'" << endl;
+}
+
+// Add this helper function in the parser code
+void handleMultiDimArrayInitialization(const std::string& array_name,
+                                     std::vector<InitializerItem*>* initializers,
+                                     const std::vector<int>& dimensions,
+                                     int element_size,
+                                     std::vector<int> current_indices,
+                                     int current_dim) {
+    if (current_dim >= dimensions.size()) return;
+    
+    int current_dim_size = dimensions[current_dim];
+    
+    for (int i = 0; i < current_dim_size && i < initializers->size(); i++) {
+        auto item = (*initializers)[i];
+        std::vector<int> new_indices = current_indices;
+        new_indices.push_back(i);
+        
+        if (item->is_list && current_dim + 1 < dimensions.size()) {
+            // Recursively handle nested dimensions
+            handleMultiDimArrayInitialization(array_name, item->list, dimensions,
+                                            element_size, new_indices, current_dim + 1);
+        } else if (!item->is_list && item->expr && item->expr->tac_var != "") {
+            // Calculate linear index for this element
+            int linear_index = 0;
+            int stride = 1;
+            
+            // Calculate linear index using row-major order
+            for (int dim = dimensions.size() - 1; dim >= 0; dim--) {
+                linear_index += new_indices[dim] * stride;
+                if (dim > 0) {
+                    stride *= dimensions[dim];
+                }
+            }
+            
+            // Emit the store operation
+            tac_gen->emitArrayStore(array_name, to_string(linear_index), 
+                                  item->expr->tac_var, element_size);
+        }
+        
+        // Don't delete item here - it will be deleted in the caller
+    }
 }
 
 std::vector<Type*> get_printf_specifier_types(const std::string& format_string) {
@@ -1026,28 +1099,48 @@ init_declarator
         delete expr;
         $$ = sym;
     }
-    | declarator ASSIGN initializer_list {
-        Symbol* sym = $1;
-        std::vector<InitializerItem*>* initializers = $3;
-        if (!sym->type->array_dimensions.empty()) {
+    // Replace the array initialization section in init_declarator rule:
+| declarator ASSIGN initializer_list {
+    Symbol* sym = $1;
+    std::vector<InitializerItem*>* initializers = $3;
+    
+    if (!sym->type->array_dimensions.empty()) {
+        tac_gen->emitComment("Array initialization: " + sym->name);
+        
+        // Calculate element size (size of base type)
+        int element_size = 4; // Default for int
+        if (sym->type->base_type == "float") element_size = 4;
+        else if (sym->type->base_type == "double") element_size = 8;
+        else if (sym->type->base_type == "char") element_size = 1;
+        else if (sym->type->base_type == "short") element_size = 2;
+        
+        // Handle multi-dimensional array initialization
+        if (sym->type->array_dimensions.size() > 1) {
+            // For 2D/3D arrays with nested initializers
+            std::vector<int> indices;
+            handleMultiDimArrayInitialization(sym->name, initializers, 
+                                            sym->type->array_dimensions, 
+                                            element_size, indices, 0);
+        } else {
+            // For 1D arrays
             int array_size = sym->type->array_dimensions[0];
             if (array_size >= 0 && initializers->size() > (size_t)array_size) {
                 yyerror(("too many initializers for array of size " + to_string(array_size)).c_str());
             }
-        }
-        
-        tac_gen->emitComment("Array initialization: " + sym->name);
-        int index = 0;
-        for (auto item : *initializers) {
-            if (!item->is_list && item->expr && !item->expr->tac_var.empty()) {
-                tac_gen->emitArrayStore(sym->name, to_string(index), item->expr->tac_var);
+            
+            for (int i = 0; i < initializers->size(); i++) {
+                auto item = (*initializers)[i];
+                if (!item->is_list && item->expr && !item->expr->tac_var.empty()) {
+                    tac_gen->emitArrayStore(sym->name, to_string(i), 
+                                          item->expr->tac_var, element_size);
+                }
+                delete item;
             }
-            index++;
-            delete item;
         }
         delete initializers;
-        $$ = sym;
     }
+    $$ = sym;
+}
     ;
 declarator
     : direct_declarator { $$ = $1; }
@@ -1649,44 +1742,70 @@ expression
 assignment_expression
     : conditional_expression { $$ = $1; }
     | unary_expression ASSIGN assignment_expression {
-        ExprResult* lhs = $1;
-        ExprResult* rhs = $3;
-        if (!lhs->lvalue_symbol) {
-            yyerror("lvalue required as left operand of assignment");
-            $$ = new ExprResult(0.0, nullptr, nullptr);
-        } else if (!lhs->type->array_dimensions.empty()) {
-            yyerror("assignment to array type");
+    // Set flag to indicate we're parsing LHS of assignment
+    g_parsing_lhs_of_assignment = true;
+    ExprResult* lhs = $1;
+    g_parsing_lhs_of_assignment = false;
+    
+    ExprResult* rhs = $3;
+    
+    if (lhs->is_array_element) {
+        // For array assignment, use the pre-calculated address from lhs
+        if (lhs->array_address.empty()) {
+            yyerror("Invalid array element assignment");
             $$ = new ExprResult(0.0, nullptr, nullptr);
         } else {
-            lhs->lvalue_symbol->dval = rhs->dval;
-            
-            // Handle type conversion in assignment
-            if (lhs->type->isFloatType()) {
-                if (rhs->type->isFloatType()) {
-                    tac_gen->emitFloatAssignment(lhs->lvalue_symbol->name, rhs->tac_var);
-                } else {
-                    // Float variable assigned with int value
-                    string temp = tac_gen->newFloatTemp();
-                    tac_gen->emitIntToFloat(temp, rhs->tac_var);
-                    tac_gen->emitFloatAssignment(lhs->lvalue_symbol->name, temp);
-                }
-            } else {
-                if (rhs->type->isFloatType()) {
-                    // Int variable assigned with float value
-                    string temp = tac_gen->newIntTemp();
-                    tac_gen->emitFloatToInt(temp, rhs->tac_var);
-                    tac_gen->emitIntAssignment(lhs->lvalue_symbol->name, temp);
-                } else {
-                    tac_gen->emitIntAssignment(lhs->lvalue_symbol->name, rhs->tac_var);
-                }
-            }
+            // Direct store using the pre-calculated address
+            tac_gen->emitRaw("*" + lhs->array_address + " = " + rhs->tac_var);
             
             $$ = new ExprResult(rhs->dval, rhs->type, nullptr);
-            $$->tac_var = lhs->lvalue_symbol->name;
+            $$->tac_var = rhs->tac_var;
         }
-        delete lhs;
-        delete rhs;
     }
+    else if (lhs->is_struct_member) {
+        // For structure member assignment, use the pre-calculated address
+        if (lhs->member_address.empty()) {
+            yyerror("Invalid structure member assignment");
+            $$ = new ExprResult(0.0, nullptr, nullptr);
+        } else {
+            // Direct store to structure member
+            tac_gen->emitRaw("*" + lhs->member_address + " = " + rhs->tac_var);
+            
+            $$ = new ExprResult(rhs->dval, rhs->type, nullptr);
+            $$->tac_var = rhs->tac_var;
+        }
+    }
+    else if (!lhs->lvalue_symbol) {
+        yyerror("lvalue required as left operand of assignment");
+        $$ = new ExprResult(0.0, nullptr, nullptr);
+    } else {
+        // Handle regular variable assignment
+        lhs->lvalue_symbol->dval = rhs->dval;
+        
+        if (lhs->type->isFloatType()) {
+            if (rhs->type->isFloatType()) {
+                tac_gen->emitFloatAssignment(lhs->lvalue_symbol->name, rhs->tac_var);
+            } else {
+                string temp = tac_gen->newFloatTemp();
+                tac_gen->emitIntToFloat(temp, rhs->tac_var);
+                tac_gen->emitFloatAssignment(lhs->lvalue_symbol->name, temp);
+            }
+        } else {
+            if (rhs->type->isFloatType()) {
+                string temp = tac_gen->newIntTemp();
+                tac_gen->emitFloatToInt(temp, rhs->tac_var);
+                tac_gen->emitIntAssignment(lhs->lvalue_symbol->name, temp);
+            } else {
+                tac_gen->emitIntAssignment(lhs->lvalue_symbol->name, rhs->tac_var);
+            }
+        }
+        
+        $$ = new ExprResult(rhs->dval, rhs->type, nullptr);
+        $$->tac_var = lhs->lvalue_symbol->name;
+    }
+    delete lhs;
+    delete rhs;
+}
     | unary_expression ADD_ASSIGN assignment_expression {
         ExprResult* lhs = $1;
         ExprResult* rhs = $3;
@@ -2391,21 +2510,79 @@ unary_expression
 postfix_expression
     : primary_expression { $$ = $1; }
     | postfix_expression LBRACKET expression RBRACKET {
-        string temp;
-        if ($1->type->isFloatType()) {
-            temp = tac_gen->newFloatTemp();
+    ExprResult* array_expr = $1;
+    ExprResult* index_expr = $3;
+    
+    // Check if we're on LHS of assignment
+    bool is_for_assignment = g_parsing_lhs_of_assignment;
+    
+    // Check if this is an array access
+    if ((array_expr->lvalue_symbol && !array_expr->type->array_dimensions.empty()) || 
+        array_expr->is_array_element) {
+        
+        // Prepare indices and dimensions
+        std::vector<std::string> indices;
+        std::vector<int> dimensions;
+        Symbol* base_symbol;
+        
+        if (array_expr->is_array_element) {
+            // Multi-dimensional array access like a[1][0]
+            indices = array_expr->array_indices;
+            dimensions = array_expr->array_dimensions;
+            base_symbol = array_expr->array_base_symbol;
+            indices.push_back(index_expr->tac_var);
         } else {
-            temp = tac_gen->newIntTemp();
+            // First dimension access like a[1]
+            indices.push_back(index_expr->tac_var);
+            dimensions = array_expr->type->array_dimensions;
+            base_symbol = array_expr->lvalue_symbol;
         }
         
-        if ($1->lvalue_symbol && !$3->tac_var.empty()) {
-            tac_gen->emitArrayAccess(temp, $1->lvalue_symbol->name, $3->tac_var);
+        int element_size = 4; // Default for int
+        if (array_expr->type->base_type == "float") element_size = 4;
+        else if (array_expr->type->base_type == "double") element_size = 8;
+        else if (array_expr->type->base_type == "char") element_size = 1;
+        else if (array_expr->type->base_type == "short") element_size = 2;
+        
+        // Create result
+        $$ = new ExprResult(0.0, array_expr->type, nullptr);
+        $$->is_array_element = true;
+        $$->array_base_symbol = base_symbol;
+        $$->array_indices = indices;
+        $$->array_dimensions = dimensions;
+        
+        if (is_for_assignment) {
+            // For assignment LHS: calculate address only, store in array_address
+            $$->array_address = tac_gen->newTemp();
+            if (indices.size() == 1) {
+                tac_gen->emitArrayAddress($$->array_address, base_symbol->name, 
+                                        indices[0], element_size);
+            } else {
+                tac_gen->emitMultiArrayAddress($$->array_address, base_symbol->name, 
+                                             indices, dimensions, element_size);
+            }
+            $$->tac_var = $$->array_address; // For assignment, tac_var is the address
+        } else {
+            // For normal access: calculate address AND load value
+            $$->tac_var = (array_expr->type->isFloatType()) ? 
+                         tac_gen->newFloatTemp() : tac_gen->newIntTemp();
+            if (indices.size() == 1) {
+                tac_gen->emitArrayAccess($$->tac_var, base_symbol->name, 
+                                       indices[0], element_size);
+            } else {
+                tac_gen->emitMultiArrayAccess($$->tac_var, base_symbol->name, 
+                                            indices, dimensions, element_size);
+            }
         }
         
-        $$ = $1;
-        $$->tac_var = temp;
-        delete $3;
+    } else {
+        yyerror("Array access on non-array type");
+        $$ = new ExprResult(0.0, nullptr, nullptr);
     }
+    
+    delete array_expr;
+    delete index_expr;
+}
 | postfix_expression LPAREN RPAREN 
     {
         ExprList* empty_args = new ExprList();
@@ -2420,36 +2597,47 @@ postfix_expression
         delete $3;
     }
     | postfix_expression DOT identifier {
-        ExprResult* struct_expr = $1;
-        string member_name = string($3);
-        Type* struct_type = struct_expr->type;
+    ExprResult* struct_expr = $1;
+    string member_name = string($3);
+    Type* struct_type = struct_expr->type;
+    
+    // Check if we're on LHS of assignment
+    bool is_for_assignment = g_parsing_lhs_of_assignment;
+    
+    if (struct_type->kind != TK_STRUCT && struct_type->kind != TK_UNION && struct_type->kind != TK_CLASS) {
+        yyerror("request for member of non-aggregate type");
+        $$ = new ExprResult();
+    } else if (struct_type->members.find(member_name) == struct_type->members.end()) {
+        yyerror(("no member named '" + member_name + "' in aggregate").c_str());
+        $$ = new ExprResult();
+    } else {
+        Symbol* member_sym = struct_type->members.at(member_name);
         
-        if (struct_type->kind != TK_STRUCT && struct_type->kind != TK_UNION && struct_type->kind != TK_CLASS) {
-            yyerror("request for member of non-aggregate type");
-            $$ = new ExprResult();
-        } else if (struct_type->members.find(member_name) == struct_type->members.end()) {
-            yyerror(("no member named '" + member_name + "' in aggregate").c_str());
-            $$ = new ExprResult();
-        } else {
-            Symbol* member_sym = struct_type->members.at(member_name);
-            
-            string temp;
-            if (member_sym->type->isFloatType()) {
-                temp = tac_gen->newFloatTemp();
-            } else {
-                temp = tac_gen->newIntTemp();
-            }
-            
+        // Create result
+        $$ = new ExprResult(member_sym->dval, member_sym->type, member_sym);
+        $$->is_struct_member = true;
+        $$->struct_base_symbol = struct_expr->lvalue_symbol;
+        $$->member_name = member_name;
+        
+        if (is_for_assignment) {
+            // For assignment LHS: calculate member address
+            $$->member_address = tac_gen->newTemp();
             if (struct_expr->lvalue_symbol) {
-                tac_gen->emitMemberAccess(temp, struct_expr->lvalue_symbol->name, member_name);
+                tac_gen->emitMemberAddress($$->member_address, struct_expr->lvalue_symbol->name, member_name);
             }
-            
-            $$ = new ExprResult(member_sym->dval, member_sym->type, member_sym);
-            $$->tac_var = temp;
+            $$->tac_var = $$->member_address; // For assignment, tac_var is the address
+        } else {
+            // For normal access: load the member value
+            $$->tac_var = (member_sym->type->isFloatType()) ? 
+                         tac_gen->newFloatTemp() : tac_gen->newIntTemp();
+            if (struct_expr->lvalue_symbol) {
+                tac_gen->emitMemberAccess($$->tac_var, struct_expr->lvalue_symbol->name, member_name);
+            }
         }
-        
-        delete struct_expr;
-        free($3);
+    }
+    
+    delete struct_expr;
+    free($3);
     }
     | postfix_expression PTR_OP identifier {
         ExprResult* ptr_expr = $1;
@@ -2857,15 +3045,160 @@ void TACGenerator::emitFunctionBegin(const std::string& function_name) {
 void TACGenerator::emitFunctionEnd(const std::string& function_name) {
     outfile << "EndFunc " << function_name << "\n" << std::endl;
 }
-
+// Single dimension array - access with load
 void TACGenerator::emitArrayAccess(const std::string& result, const std::string& array, 
-                                   const std::string& index) {
-    outfile << result << " = " << array << "[" << index << "]" << std::endl;
+                                   const std::string& index, int element_size) {
+    std::string addr_temp = newTemp();
+    emitArrayAddress(addr_temp, array, index, element_size);
+    outfile << result << " = *" << addr_temp << std::endl;
 }
 
+// Multi-dimensional array - access with load
+void TACGenerator::emitMultiArrayAccess(const std::string& result, const std::string& array, 
+                                       const std::vector<std::string>& indices, 
+                                       const std::vector<int>& dimensions, int element_size) {
+    std::string addr_temp = newTemp();
+    emitMultiArrayAddress(addr_temp, array, indices, dimensions, element_size);
+    outfile << result << " = *" << addr_temp << std::endl;
+}
+void TACGenerator::emitMemberAddress(const std::string& result, const std::string& struct_var, 
+                                    const std::string& member) {
+    outfile << result << " = &" << struct_var << "." << member << std::endl;
+}
+
+// Single dimension array - address only
+void TACGenerator::emitArrayAddress(const std::string& result, const std::string& array, 
+                                   const std::string& index, int element_size) {
+    if (index == "0") {
+        // Optimize: if index is 0, just take address of array
+        outfile << result << " = &" << array << std::endl;
+    } else {
+        std::string offset_temp = newTemp();
+        emit(offset_temp, index, "*", std::to_string(element_size));
+        outfile << result << " = &" << array << " + " << offset_temp << std::endl;
+    }
+}
+
+// Multi-dimensional array - address only  
+void TACGenerator::emitMultiArrayAddress(const std::string& result, const std::string& array, 
+                                        const std::vector<std::string>& indices, 
+                                        const std::vector<int>& dimensions, int element_size) {
+    if (indices.empty()) {
+        outfile << result << " = &" << array << std::endl;
+        return;
+    }
+    
+    // Pre-calculate strides
+    std::vector<int> strides(dimensions.size(), element_size);
+    for (int i = dimensions.size() - 2; i >= 0; i--) {
+        strides[i] = strides[i + 1] * dimensions[i + 1];
+    }
+    
+    // Check if all indices are zero
+    bool all_zero = true;
+    for (const auto& idx : indices) {
+        if (idx != "0") {
+            all_zero = false;
+            break;
+        }
+    }
+    
+    if (all_zero) {
+        // Optimize: if all indices are 0, just take address of array
+        outfile << result << " = &" << array << std::endl;
+        return;
+    }
+    
+    // Calculate offset efficiently
+    std::string offset = "0";
+    bool first_term = true;
+    
+    for (size_t i = 0; i < indices.size(); i++) {
+        if (indices[i] != "0") { // Skip zero indices
+            std::string term;
+            if (strides[i] == 1) {
+                term = indices[i]; // No multiplication needed
+            } else {
+                term = newTemp();
+                emit(term, indices[i], "*", std::to_string(strides[i]));
+            }
+            
+            if (first_term) {
+                offset = term;
+                first_term = false;
+            } else {
+                std::string new_offset = newTemp();
+                emit(new_offset, offset, "+", term);
+                offset = new_offset;
+            }
+        }
+    }
+    
+    // Final address calculation
+    if (offset == "0") {
+        outfile << result << " = &" << array << std::endl;
+    } else {
+        outfile << result << " = &" << array << " + " << offset << std::endl;
+    }
+}
 void TACGenerator::emitArrayStore(const std::string& array, const std::string& index, 
-                                  const std::string& value) {
-    outfile << array << "[" << index << "] = " << value << std::endl;
+                                  const std::string& value, int element_size) {
+    std::string offset_temp = newIntTemp();
+    emitIntOp(offset_temp, index, "*", std::to_string(element_size));
+    
+    std::string addr_temp = newIntTemp();
+    outfile << addr_temp << " = &" << array << " + " << offset_temp << std::endl;
+    outfile << "*" << addr_temp << " = " << value << std::endl;
+}
+
+void TACGenerator::emitMultiArrayStore(const std::string& array, 
+                                      const std::vector<std::string>& indices,
+                                      const std::string& value,
+                                      const std::vector<int>& dimensions, int element_size) {
+    
+    if (indices.empty()) return;
+    
+    // Pre-calculate strides
+    std::vector<int> strides(dimensions.size(), element_size);
+    for (int i = dimensions.size() - 2; i >= 0; i--) {
+        strides[i] = strides[i + 1] * dimensions[i + 1];
+    }
+    
+    // Calculate offset step by step (proper TAC)
+    std::string offset;
+    
+    // Handle first term
+    if (indices[0] == "0") {
+        offset = "0";
+    } else {
+        offset = newTemp();
+        emit(offset, indices[0], "*", std::to_string(strides[0]));
+    }
+    
+    // Add remaining terms
+    for (size_t i = 1; i < indices.size(); i++) {
+        if (indices[i] != "0") { // Skip if index is 0
+            std::string term = newTemp();
+            emit(term, indices[i], "*", std::to_string(strides[i]));
+            
+            if (offset == "0") {
+                offset = term;
+            } else {
+                std::string new_offset = newTemp();
+                emit(new_offset, offset, "+", term);
+                offset = new_offset;
+            }
+        }
+    }
+    
+    // Calculate address and store
+    std::string addr_temp = newTemp();
+    if (offset == "0") {
+        outfile << addr_temp << " = &" << array << std::endl;
+    } else {
+        outfile << addr_temp << " = &" << array << " + " << offset << std::endl;
+    }
+    outfile << "*" << addr_temp << " = " << value << std::endl;
 }
 
 void TACGenerator::emitAddressOf(const std::string& result, const std::string& var) {
