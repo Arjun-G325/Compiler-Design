@@ -30,6 +30,9 @@ private:
     std::vector<std::string> parserErrors;
     std::map<std::string, std::string> globalInitialValues;
 
+    // Set of reserved SPIM/MIPS keywords
+    std::set<std::string> spimKeywords;
+
     // Register and Address Descriptors
     struct RegisterInfo {
         std::string varName;      // Variable currently in register (empty if free)
@@ -58,11 +61,42 @@ private:
     std::vector<std::string> argIntRegs = {"$a0", "$a1", "$a2", "$a3"};
     std::vector<std::string> argFloatRegs = {"$f12", "$f14"};
 
+    /**
+     * @brief Sanitizes a variable or label name if it conflicts with a SPIM opcode.
+     * @param name The name to check.
+     * @return The sanitized name (e.g., "b_1") or the original name if no conflict.
+     */
+    std::string sanitizeName(const std::string& name) {
+        if (spimKeywords.count(name)) {
+            return name + "_1"; // Append _1 as requested
+        }
+        return name;
+    }
+
 public:
     TACToSPIMConverter() : labelCount(0), stringConstCount(0), floatConstCount(0), 
                           tempVarCount(0), stackOffset(0), argStackOffset(0), useCounter(0),
                           hasParserErrors(false) {
         initializeRegisters();
+        
+        // Initialize the set of SPIM keywords to avoid conflicts
+        spimKeywords = {
+            "add", "addi", "addu", "addiu", "sub", "subu", "mul", "mult", "div",
+            "and", "andi", "or", "ori", "xor", "xori", "nor",
+            "sll", "srl", "sra", "sllv", "srlv", "srav",
+            "lw", "sw", "lh", "sh", "lb", "sb", "lui",
+            "li", "la", "move",
+            "mfhi", "mflo", "mthi", "mtlo",
+            "j", "jal", "jr", "jalr",
+            "beq", "bne", "blez", "bgtz", "bltz", "bgez",
+            "slt", "slti", "sltu", "sltiu",
+            "syscall",
+            "l.s", "s.s", "mov.s", "add.s", "sub.s", "mul.s", "div.s",
+            "c.eq.s", "c.le.s", "c.lt.s",
+            "bc1t", "bc1f",
+            "mfc1", "mtc1", "cvt.s.w", "trunc.w.s",
+            "b", "abs" // Common problematic names
+        };
     }
 
     void initializeRegisters() {
@@ -93,6 +127,7 @@ public:
     }
 
     std::string generateLabel(const std::string& base) {
+        // Sanitization is not needed here as we control the base (e.g., "float_true")
         return base + std::to_string(labelCount++);
     }
 
@@ -109,7 +144,7 @@ public:
 
     std::string getStringConstant(const std::string& value) {
         std::string cleanValue = value;
-        if (cleanValue.front() == '"' && cleanValue.back() == '"') {
+        if (!cleanValue.empty() && cleanValue.front() == '"' && cleanValue.back() == '"') {
             cleanValue = cleanValue.substr(1, cleanValue.length() - 2);
         }
         
@@ -177,7 +212,14 @@ public:
                 registers[reg].dirty = false;
                 
                 // Load from memory if variable exists there
-                if (variableInfo.find(var) != variableInfo.end() && variableInfo[var].stackOffset != -1) {
+                if (isGlobalVar(var)) { // CHECK FOR GLOBAL FIRST
+                    output.push_back("    # Loading global " + var + " into " + reg + "\n");
+                    if (isFloat) {
+                        output.push_back("    l.s " + reg + ", " + sanitizeName(var) + "\n");
+                    } else {
+                        output.push_back("    lw " + reg + ", " + sanitizeName(var) + "\n");
+                    }
+                } else if (variableInfo.find(var) != variableInfo.end() && variableInfo[var].stackOffset != -1) {
                     output.push_back("    # Loading " + var + " from stack to " + reg + "\n");
                     if (isFloat) {
                         output.push_back("    l.s " + reg + ", " + std::to_string(variableInfo[var].stackOffset) + "($fp)\n");
@@ -225,7 +267,14 @@ public:
         registers[lruReg].dirty = false;
         
         // Load from memory if available
-        if (variableInfo.find(var) != variableInfo.end() && variableInfo[var].stackOffset != -1) {
+        if (isGlobalVar(var)) { // CHECK FOR GLOBAL FIRST
+            output.push_back("    # Loading global " + var + " into " + lruReg + "\n");
+            if (isFloat) {
+                output.push_back("    l.s " + lruReg + ", " + sanitizeName(var) + "\n");
+            } else {
+                output.push_back("    lw " + lruReg + ", " + sanitizeName(var) + "\n");
+            }
+        } else if (variableInfo.find(var) != variableInfo.end() && variableInfo[var].stackOffset != -1) {
             output.push_back("    # Loading " + var + " from stack to " + lruReg + "\n");
             if (isFloat) {
                 output.push_back("    l.s " + lruReg + ", " + std::to_string(variableInfo[var].stackOffset) + "($fp)\n");
@@ -248,23 +297,37 @@ public:
         auto& registers = floatRegisters.find(reg) != floatRegisters.end() ? floatRegisters : intRegisters;
         bool isFloat = registers[reg].isFloat;
         
-        // Ensure variable has stack allocation
-        if (variableInfo.find(var) == variableInfo.end()) {
-            allocateStackSpace(var);
-        }
-        
-        if (variableInfo[var].stackOffset == -1) {
-            allocateStackSpace(var);
-        }
-        
-        output.push_back("    # Spilling " + var + " from " + reg + " to stack\n");
-        if (isFloat) {
-            output.push_back("    s.s " + reg + ", " + std::to_string(variableInfo[var].stackOffset) + "($fp)\n");
+        if (isGlobalVar(var)) {
+            // Spill to global memory
+            output.push_back("    # Spilling " + var + " from " + reg + " to global memory\n");
+            if (isFloat) {
+                output.push_back("    s.s " + reg + ", " + sanitizeName(var) + "\n");
+            } else {
+                output.push_back("    sw " + reg + ", " + sanitizeName(var) + "\n");
+            }
+            if (variableInfo.find(var) != variableInfo.end()) {
+                variableInfo[var].dirty = false;
+            }
         } else {
-            output.push_back("    sw " + reg + ", " + std::to_string(variableInfo[var].stackOffset) + "($fp)\n");
+            // Spill to stack (original behavior)
+            // Ensure variable has stack allocation
+            if (variableInfo.find(var) == variableInfo.end()) {
+                allocateStackSpace(var);
+            }
+            
+            if (variableInfo[var].stackOffset == -1) {
+                allocateStackSpace(var);
+            }
+            
+            output.push_back("    # Spilling " + var + " from " + reg + " to stack\n");
+            if (isFloat) {
+                output.push_back("    s.s " + reg + ", " + std::to_string(variableInfo[var].stackOffset) + "($fp)\n");
+            } else {
+                output.push_back("    sw " + reg + ", " + std::to_string(variableInfo[var].stackOffset) + "($fp)\n");
+            }
+            
+            variableInfo[var].dirty = false;
         }
-        
-        variableInfo[var].dirty = false;
     }
 
     void allocateStackSpace(const std::string& var) {
@@ -406,17 +469,14 @@ public:
         // Skip comments and declarations
         if (line.find("//") == 0) {
             if (line.find("Variable declaration:") != std::string::npos) {
-                parseVariableDeclaration(line); // This will now use the fixed function
+                parseVariableDeclaration(line);
             }
             return "# " + line + "\n";
         }
         
         // Function begin/end
         if (line.find("BeginFunc") != std::string::npos) {
-            // ================== THIS IS THE FIX ==================
-            // Changed " " to "\s+" to allow for multiple spaces/tabs
             std::regex funcRegex(R"(BeginFunc\s+(\w+))");
-            // ================== END OF FIX ==================
             
             std::smatch match;
             if (std::regex_search(line, match, funcRegex)) {
@@ -427,7 +487,8 @@ public:
                 paramStack.clear();
                 resetRegisters();
                 
-                output.push_back("\n" + currentFunc + ":\n");
+                // *** MODIFIED to sanitize function name ***
+                output.push_back("\n" + sanitizeName(currentFunc) + ":\n");
                 output.push_back("    addiu $sp, $sp, -8    # Allocate space for ra/fp\n");
                 output.push_back("    sw $ra, 4($sp)        # Save return address\n");
                 output.push_back("    sw $fp, 0($sp)        # Save frame pointer\n");
@@ -439,10 +500,7 @@ public:
         if (line.find("EndFunc") != std::string::npos) {
             spillAllDirtyRegisters();
             
-            // ================== THIS IS THE (other) FIX ==================
-            // Also fixing EndFunc just in case
             std::regex funcRegex(R"(EndFunc\s*)");
-            // ================== END OF FIX ==================
             
             int totalStack = (-stackOffset + 7) & ~7;
             output.push_back("    # Function epilogue\n");
@@ -515,6 +573,36 @@ public:
             std::string type = match[3];
             
             src = std::regex_replace(src, std::regex(R"(\s*$)"), "");
+
+            if (src.rfind("&", 0) == 0) {
+                std::string varName = src.substr(1); // Get name after '&'
+                std::string destReg = getRegisterForVar(dest, false); // Addresses are ints
+
+                // Case 1: Address of a string constant (e.g., "&\"%d,%d\"")
+                if (varName.front() == '"') {
+                    std::string label = getStringConstant(varName); // This function handles the quotes
+                    
+                    output.push_back("    la " + destReg + ", " + label + "  # " + line);
+                    
+                    // Store the *actual string value* for scanf to find later
+                    globalInitialValues[dest] = varName; 
+                }
+                // Case 2: Address of a global variable (e.g., "&a")
+                else if (globalVars.count(varName)) {
+                    // Generate the correct "Load Address" instruction
+                    output.push_back("    la " + destReg + ", " + sanitizeName(varName) + "  # " + line);
+                }
+                // Case 3: Address of a local/stack variable (e.g., "&x")
+                else {
+                    // This variable MUST be on the stack to take its address
+                    allocateStackSpace(varName);
+                    int offset = variableInfo[varName].stackOffset;
+                    output.push_back("    addiu " + destReg + ", $fp, " + std::to_string(offset) + " # " + line);
+                }
+
+                markDirty(dest, destReg);
+                return "# " + line + "\n"; // End processing for this line
+            }
             
             if (!type.empty()) {
                 varTypes[dest] = type;
@@ -569,6 +657,10 @@ public:
             // Case 4: Source is a string literal (e.g., ""%f %d"")
             else if (src.find("\"") == 0) {
                 std::string stringLabel = getStringConstant(src);
+
+                // Store the literal value for scanf/printf to find
+                globalInitialValues[dest] = src;
+                
                 if (isDestFloat) {
                     // This is invalid, but we'll treat it as loading the address
                     output.push_back("    # WARNING: Assigning string address to float var\n");
@@ -581,6 +673,7 @@ public:
             // Case 5: Source is a VARIABLE
             else {
                 bool isSrcFloat = isFloatVar(src);
+                // *** MODIFIED: getRegisterForVar now handles global/local loading ***
                 std::string srcReg = getRegisterForVar(src, isSrcFloat);
 
                 if (isDestFloat && !isSrcFloat) {
@@ -646,7 +739,8 @@ public:
             std::string label = match[2];
             
             std::string condReg = getRegisterForVar(condition, false);
-            output.push_back("    beq " + condReg + ", $zero, " + label + "  # ifFalse " + condition + "\n");
+            // *** MODIFIED to sanitize jump label ***
+            output.push_back("    beq " + condReg + ", $zero, " + sanitizeName(label) + "  # ifFalse " + condition + "\n");
             return "# " + line + "\n";
         }
         
@@ -656,7 +750,8 @@ public:
             std::smatch match;
             if (std::regex_search(line, match, gotoRegex)) {
                 std::string label = match[1];
-                output.push_back("    j " + label + "\n");
+                // *** MODIFIED to sanitize jump label ***
+                output.push_back("    j " + sanitizeName(label) + "\n");
             }
             return "# " + line + "\n";
         }
@@ -664,7 +759,9 @@ public:
         // Labels
         if (std::regex_match(line, std::regex(R"(\w+:)"))) {
             spillAllDirtyRegisters(); // Spill before labels
-            output.push_back(line + "\n");
+            // *** MODIFIED to sanitize label definition ***
+            std::string label = line.substr(0, line.length() - 1);
+            output.push_back(sanitizeName(label) + ":\n");
             return "# " + line + " (Label)\n"; // Return a comment, just like other handlers
         }
         
@@ -780,7 +877,8 @@ public:
         } else {
             // Regular function call with register/stack argument passing
             setupFunctionArgs(numArgs, paramStack, false);
-            output.push_back("    jal " + funcName + "  # Function call\n");
+            // *** MODIFIED to sanitize function name ***
+            output.push_back("    jal " + sanitizeName(funcName) + "  # Function call\n");
             
             // Handle return value
             if (!resultVar.empty()) {
@@ -806,86 +904,176 @@ public:
     }
 
     void convertPrintfCall(int numArgs) {
-        // This is a simplified printf that handles the specific case from test1.txt:
-        // printf(i0, x, y) where i0 = "%f %d"
+        output.push_back("    # printf call\n");
+
+        if (numArgs < 1 || paramStack.empty()) {
+            output.push_back("    # ERROR: Not enough args for printf\n");
+            return;
+        }
+
+        // 1. Get the format string variable (e.g., "i0")
+        std::string formatStrVar = paramStack.back();
+        std::string actualFormatString;
+
+        // 2. Look up its literal value (e.g., "\"%d hello\"")
+        if (globalInitialValues.count(formatStrVar)) {
+            actualFormatString = globalInitialValues[formatStrVar];
+        } else {
+            output.push_back("    # ERROR: Could not find format string for " + formatStrVar + "\n");
+            return;
+        }
+
+        // 3. Clean the quotes (e.g., "%d hello")
+        if (!actualFormatString.empty() && actualFormatString.front() == '"' && actualFormatString.back() == '"') {
+            actualFormatString = actualFormatString.substr(1, actualFormatString.length() - 2);
+        }
+
+        // 4. Loop through the format string and print chunks/variables
+        // Start at the first argument (index numArgs-2) and go backwards
+        int varParamIndex = numArgs - 2; 
         
-        if (numArgs >= 1 && !paramStack.empty()) {
-            
-            // Re-create the argument list from the stack
-            // TAC: param y, param x, param i0
-            // paramStack: [y, x, i0]
-            // We need i0 (format), x (arg1), y (arg2)
-            
-            if (numArgs == 3) {
-                 // Specific case for printf("%f %d", x, y)
-                std::string formatStrVar = paramStack[numArgs-1]; // i0
-                std::string arg1Var = paramStack[numArgs-2]; // x
-                std::string arg2Var = paramStack[numArgs-3]; // y
+        int lastIndex = 0;     // Tracks the start of a literal string chunk
 
-                std::string arg1Reg = getRegisterForVar(arg1Var, true); // x is float
-                std::string arg2Reg = getRegisterForVar(arg2Var, false); // y is int
-                
-                output.push_back("    # Simulating printf(\"%f %d\", x, y)\n");
-                
-                // 1. Print float (x)
-                output.push_back("    li $v0, 2           # Print float syscall\n");
-                output.push_back("    mov.s $f12, " + arg1Reg + " # Load x to $f12\n");
-                output.push_back("    syscall\n");
-                
-                // 2. Print space
-                output.push_back("    li $v0, 11          # Print character syscall\n");
-                output.push_back("    li $a0, 32          # Space character ' '\n");
-                output.push_back("    syscall\n");
-                
-                // 3. Print int (y)
-                output.push_back("    li $v0, 1           # Print integer syscall\n");
-                output.push_back("    move $a0, " + arg2Reg + "  # Load y to $a0\n");
-                output.push_back("    syscall\n");
-                
-                // 4. Print newline
-                output.push_back("    li $v0, 11          # Print character syscall\n");
-                output.push_back("    li $a0, 10          # Newline character '\\n'\n");
-                output.push_back("    syscall\n");
+        for (int i = 0; i < actualFormatString.length(); ++i) {
+            if (actualFormatString[i] == '%') {
+                // A) Print any literal chunk that came before this '%'
+                if (i > lastIndex) {
+                    std::string chunk = actualFormatString.substr(lastIndex, i - lastIndex);
+                    // Use getStringConstant. It correctly handles unquoted chunks.
+                    std::string label = getStringConstant(chunk);
+                    output.push_back("    li $v0, 4           # Print string chunk\n");
+                    output.push_back("    la $a0, " + label + "\n");
+                    output.push_back("    syscall\n");
+                }
 
-            } else {
-                // Fallback for simple string print
-                std::string formatStrVar = paramStack.back(); // Get format string
-                std::string formatAddrReg = getRegisterForVar(formatStrVar, false);
+                // B) Process the format specifier
+                if (i + 1 < actualFormatString.length()) {
+                    char specifier = actualFormatString[i+1];
+                    std::string varName;
+                    std::string varReg;
 
-                output.push_back("    li $v0, 4           # Print string syscall\n");
-                output.push_back("    move $a0, " + formatAddrReg + "  # Load format string address\n");
-                output.push_back("    syscall\n");
-                
-                // Also print newline for better output
-                output.push_back("    li $v0, 11          # Print character syscall\n");
-                output.push_back("    li $a0, 10          # Newline character\n");
-                output.push_back("    syscall\n");
+                    // Check if we've run out of arguments (index < 0)
+                    if (specifier != '%' && varParamIndex < 0) {
+                         output.push_back("    # ERROR: More format specifiers than variables\n");
+                         break; // Stop processing
+                    } else if (specifier != '%') {
+                         varName = paramStack[varParamIndex];
+                    }
+
+                    if (specifier == 'd') {
+                        varReg = getRegisterForVar(varName, false);
+                        output.push_back("    li $v0, 1           # Print integer\n");
+                        output.push_back("    move $a0, " + varReg + "\n");
+                        output.push_back("    syscall\n");
+                        varParamIndex--;
+                    } else if (specifier == 'f') {
+                        varReg = getRegisterForVar(varName, true);
+                        output.push_back("    li $v0, 2           # Print float\n");
+                        output.push_back("    mov.s $f12, " + varReg + "\n");
+                        output.push_back("    syscall\n");
+                        varParamIndex--;
+                    } else if (specifier == 's') {
+                        varReg = getRegisterForVar(varName, false); // String address
+                        output.push_back("    li $v0, 4           # Print string\n");
+                        output.push_back("    move $a0, " + varReg + "\n");
+                        output.push_back("    syscall\n");
+                        varParamIndex--;
+                    } else if (specifier == 'c') {
+                        varReg = getRegisterForVar(varName, false); // Char value
+                        output.push_back("    li $v0, 11          # Print char\n");
+                        output.push_back("    move $a0, " + varReg + "\n");
+                        output.push_back("    syscall\n");
+                        varParamIndex--;
+                    } else if (specifier == '%') {
+                        output.push_back("    li $v0, 11          # Print char\n");
+                        output.push_back("    li $a0, 37          # '%' character\n");
+                        output.push_back("    syscall\n");
+                    }
+                    
+                    i++; // Skip the specifier character
+                    lastIndex = i + 1; // Update start of next chunk
+                }
             }
+        }
+
+        // 5. Print any remaining literal chunk after the last specifier
+        if (lastIndex < actualFormatString.length()) {
+            std::string chunk = actualFormatString.substr(lastIndex);
+            std::string label = getStringConstant(chunk);
+            output.push_back("    li $v0, 4           # Print final string chunk\n");
+            output.push_back("    la $a0, " + label + "\n");
+            output.push_back("    syscall\n");
         }
     }
 
     void convertScanfCall(int numArgs) {
-        output.push_back("    # scanf call - using simplified input\n");
+        output.push_back("    # scanf call\n");
         
-        if (numArgs >= 1 && !paramStack.empty()) {
-            std::string formatStr = paramStack.back();
-            if (formatStr.find("%d") != std::string::npos) {
-                output.push_back("    li $v0, 5           # Read integer syscall\n");
-                output.push_back("    syscall\n");
-                if (numArgs >= 2) {
-                    std::string var = paramStack[numArgs-2];
-                    std::string varReg = getRegisterForVar(var, false);
-                    output.push_back("    move " + varReg + ", $v0  # Store input\n");
-                    markDirty(var, varReg);
-                }
-            } else if (formatStr.find("%f") != std::string::npos) {
-                output.push_back("    li $v0, 6           # Read float syscall\n");
-                output.push_back("    syscall\n");
-                if (numArgs >= 2) {
-                    std::string var = paramStack[numArgs-2];
-                    std::string varReg = getRegisterForVar(var, true);
-                    output.push_back("    mov.s " + varReg + ", $f0  # Store input\n");
-                    markDirty(var, varReg);
+        if (numArgs < 2 || paramStack.empty()) {
+            output.push_back("    # ERROR: Not enough args for scanf\n");
+            return;
+        }
+
+        // 1. Get the format string variable (e.g., "i6")
+        std::string formatStrVar = paramStack.back();
+        std::string actualFormatString;
+
+        // 2. Look up its literal value (e.g., "\"%d,%d\"")
+        if (globalInitialValues.count(formatStrVar)) {
+            actualFormatString = globalInitialValues[formatStrVar];
+        } else {
+            output.push_back("    # ERROR: Could not find format string for " + formatStrVar + "\n");
+            return;
+        }
+
+        // 3. Clean the quotes (e.g., "%d,%d")
+        if (!actualFormatString.empty() && actualFormatString.front() == '"' && actualFormatString.back() == '"') {
+            actualFormatString = actualFormatString.substr(1, actualFormatString.length() - 2);
+        }
+
+        // 4. Loop through the format string and issue syscalls
+        
+        // We expect (numArgs - 1) variables to be on the stack, e.g., [var1, var2, formatStr]
+        // So we read from index (numArgs - 2) down to 0
+        int varParamIndex = numArgs - 2; 
+
+        for (int i = 0; i < actualFormatString.length(); ++i) {
+            if (actualFormatString[i] == '%') {
+                if (i + 1 < actualFormatString.length()) {
+                    char specifier = actualFormatString[i+1];
+                    
+                    // Check if we have a variable left to store into
+                    if (varParamIndex < 0) {
+                        output.push_back("    # ERROR: More format specifiers than variables\n");
+                        break;
+                    }
+                    
+                    // Get the variable name from the stack (e.g., "i7", "i8")
+                    std::string varToStore = paramStack[varParamIndex];
+                    
+                    // We assume this variable ("i7") holds the *address* (&a)
+                    // We need to load this address into a register first.
+                    std::string addrReg = getRegisterForVar(varToStore, false);
+
+                    if (specifier == 'd') {
+                        // Issue syscall to read an integer
+                        output.push_back("    li $v0, 5           # Read integer syscall\n");
+                        output.push_back("    syscall\n");
+                        
+                        // Store the result ($v0) *at the address* in addrReg
+                        output.push_back("    sw $v0, 0(" + addrReg + ")  # Store input into " + varToStore + "\n");
+                        
+                    } else if (specifier == 'f') {
+                        // Issue syscall to read a float
+                        output.push_back("    li $v0, 6           # Read float syscall\n");
+                        output.push_back("    syscall\n");
+                        
+                        // Store the result ($f0) *at the address* in addrReg
+                        output.push_back("    s.s $f0, 0(" + addrReg + ")  # Store input into " + varToStore + "\n");
+                    }
+                    
+                    varParamIndex--; // Move to the next variable
+                    i++; // Skip the specifier character
                 }
             }
         }
@@ -930,11 +1118,13 @@ public:
             if (globalVars.find(varType.first) != globalVars.end()) { 
 
                 std::string originalVarName = varType.first;
-                std::string outputVarName = originalVarName;
+                // *** MODIFIED: Sanitize the output label name ***
+                std::string outputVarName = sanitizeName(originalVarName);
                 
-                if (outputVarName == "b") {
-                    outputVarName = "b_b";
-                }
+                // *** REMOVED: The old specific 'b' check is replaced by sanitizeName ***
+                // if (outputVarName == "b") {
+                //    outputVarName = "b_b";
+                // }
                 
                 std::string initialValue;
                 // Use the ORIGINAL name for lookup
