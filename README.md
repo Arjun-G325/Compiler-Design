@@ -1,5 +1,5 @@
 # Compiler-Design
-Compiler for a C-like language.
+Toy compiler for a C-like language.
 
 Prerequisites:
 
