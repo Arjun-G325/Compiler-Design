@@ -68,7 +68,7 @@ private:
      */
     std::string sanitizeName(const std::string& name) {
         if (spimKeywords.count(name)) {
-            return name + "_1"; // Append _1 as requested
+            return name + "_1"; // Append _1
         }
         return name;
     }
@@ -487,7 +487,6 @@ public:
                 paramStack.clear();
                 resetRegisters();
                 
-                // *** MODIFIED to sanitize function name ***
                 output.push_back("\n" + sanitizeName(currentFunc) + ":\n");
                 output.push_back("    addiu $sp, $sp, -8    # Allocate space for ra/fp\n");
                 output.push_back("    sw $ra, 4($sp)        # Save return address\n");
@@ -504,13 +503,9 @@ public:
             
             int totalStack = (-stackOffset + 7) & ~7;
             output.push_back("    # Function epilogue\n");
-            if (totalStack > 0) {
-                output.push_back("    addiu $sp, $sp, " + std::to_string(totalStack) + "  # Deallocate local variables\n");
-            }
+            output.push_back("    move $sp, $fp         # Reset $sp to $fp\n");
             output.push_back("    lw $fp, 0($sp)        # Restore frame pointer\n");
             output.push_back("    lw $ra, 4($sp)        # Restore return address\n");
-            output.push_back("    addiu $sp, $sp, 8     # Deallocate stack frame\n");
-            
             if (currentFunc == "main") {
                 output.push_back("    li $v0, 10           # Exit syscall\n");
                 output.push_back("    syscall\n");
@@ -544,9 +539,42 @@ public:
             convertFunctionCall(funcName, numArgs, resultVar);
             return "# " + line + "\n";
         }
+
+        // Check for binary operations before simple assignments.
+        // Group 1: dest, Group 2: left, Group 3: op, Group 4: right, Group 5: type
+        std::regex binOpRegex(R"((\w+)\s*=\s*(\w+)\s*([\+\-\*\/])\s*(\w+)(?:\s*\[(\w+)\])?)");
+        if (std::regex_search(line, match, binOpRegex)) {
+            std::string dest = match[1];
+            std::string left = match[2];
+            std::string op = match[3];
+            std::string right = match[4];
+            std::string type = match[5].str(); // Get optional type
+            
+            if (type == "FLOAT") {
+                convertFloatOperation(dest, left, op, right);
+            } else if (type == "INT") {
+                convertIntOperation(dest, left, op, right);
+            } else {
+                // Type is missing, infer from dest var
+                if (isFloatVar(dest)) {
+                    output.push_back("    # Inferred type as FLOAT from var " + dest + "\n");
+                    convertFloatOperation(dest, left, op, right);
+                } else if (isIntVar(dest)) {
+                    output.push_back("    # Inferred type as INT from var " + dest + "\n");
+                    convertIntOperation(dest, left, op, right);
+                } else {
+                    // ERROR: Cannot infer type per user request
+                    std::string errorMsg = "Ambiguous type for operation. Dest var '" + dest + "' must start with 'i' or 'f', or specify [INT]/[FLOAT].";
+                    output.push_back("# ERROR: " + errorMsg + "\n");
+                    output.push_back("# " + line + "\n");
+                    hasParserErrors = true;
+                    parserErrors.push_back(errorMsg + " (Line: " + line + ")");
+                }
+            }
+            return "# " + line + "\n";
+        }
         
-        // Simple assignments
-        std::regex simpleAssign(R"((\w+)\s*=\s*([^;\[]+)(?:\s*\[([^\]]+)\])?)");
+        std::regex simpleAssign(R"((\w+)\s*=\s*([^;\[\+\-\*\/]+)(?:\s*\[([^\]]+)\])?)");
         
         if (std::regex_search(line, match, simpleAssign)) {
 
@@ -673,7 +701,6 @@ public:
             // Case 5: Source is a VARIABLE
             else {
                 bool isSrcFloat = isFloatVar(src);
-                // *** MODIFIED: getRegisterForVar now handles global/local loading ***
                 std::string srcReg = getRegisterForVar(src, isSrcFloat);
 
                 if (isDestFloat && !isSrcFloat) {
@@ -699,21 +726,7 @@ public:
         }
         
         // Binary operations
-        std::regex binOpRegex(R"((\w+)\s*=\s*(\w+)\s*([\+\-\*\/])\s*(\w+)\s*\[(\w+)\])");
-        if (std::regex_search(line, match, binOpRegex)) {
-            std::string dest = match[1];
-            std::string left = match[2];
-            std::string op = match[3];
-            std::string right = match[4];
-            std::string type = match[5];
-            
-            if (type == "FLOAT") {
-                convertFloatOperation(dest, left, op, right);
-            } else {
-                convertIntOperation(dest, left, op, right);
-            }
-            return "# " + line + "\n";
-        }
+        // (This block is now moved up)
         
         // Comparison operations
         std::regex cmpRegex(R"((\w+)\s*=\s*(\w+)\s*([><=!]+)\s*(\w+)\s*\[(\w+)\])");
@@ -739,7 +752,6 @@ public:
             std::string label = match[2];
             
             std::string condReg = getRegisterForVar(condition, false);
-            // *** MODIFIED to sanitize jump label ***
             output.push_back("    beq " + condReg + ", $zero, " + sanitizeName(label) + "  # ifFalse " + condition + "\n");
             return "# " + line + "\n";
         }
@@ -750,7 +762,6 @@ public:
             std::smatch match;
             if (std::regex_search(line, match, gotoRegex)) {
                 std::string label = match[1];
-                // *** MODIFIED to sanitize jump label ***
                 output.push_back("    j " + sanitizeName(label) + "\n");
             }
             return "# " + line + "\n";
@@ -759,7 +770,6 @@ public:
         // Labels
         if (std::regex_match(line, std::regex(R"(\w+:)"))) {
             spillAllDirtyRegisters(); // Spill before labels
-            // *** MODIFIED to sanitize label definition ***
             std::string label = line.substr(0, line.length() - 1);
             output.push_back(sanitizeName(label) + ":\n");
             return "# " + line + " (Label)\n"; // Return a comment, just like other handlers
@@ -877,7 +887,6 @@ public:
         } else {
             // Regular function call with register/stack argument passing
             setupFunctionArgs(numArgs, paramStack, false);
-            // *** MODIFIED to sanitize function name ***
             output.push_back("    jal " + sanitizeName(funcName) + "  # Function call\n");
             
             // Handle return value
@@ -1118,13 +1127,7 @@ public:
             if (globalVars.find(varType.first) != globalVars.end()) { 
 
                 std::string originalVarName = varType.first;
-                // *** MODIFIED: Sanitize the output label name ***
                 std::string outputVarName = sanitizeName(originalVarName);
-                
-                // *** REMOVED: The old specific 'b' check is replaced by sanitizeName ***
-                // if (outputVarName == "b") {
-                //    outputVarName = "b_b";
-                // }
                 
                 std::string initialValue;
                 // Use the ORIGINAL name for lookup
