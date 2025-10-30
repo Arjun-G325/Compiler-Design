@@ -41,8 +41,7 @@ private:
 
     // Register and Address Descriptors
     struct RegisterInfo {
-        std::string varName;      // Variable currently in register (empty if free)
-        bool dirty;               // Whether register contains modified value
+       std::set<std::string> varNames;      // Variable currently in register (empty if free)
         bool isFloat;             // Whether register holds float value
         int lastUsed;             // For LRU eviction
     };
@@ -111,29 +110,44 @@ public:
     }
 
     void initializeRegisters() {
-        // Initialize integer registers
         for (const auto& reg : availableIntRegs) {
-            intRegisters[reg] = {"", false, false, 0};
+            // *** FIX: Explicitly assign members instead of brace initialization ***
+            intRegisters[reg].varNames.clear();
+            intRegisters[reg].isFloat = false;
+            intRegisters[reg].lastUsed = 0;
         }
         for (const auto& reg : argIntRegs) {
-            intRegisters[reg] = {"", false, false, 0};
+            // *** FIX: Explicitly assign members instead of brace initialization ***
+            intRegisters[reg].varNames.clear();
+            intRegisters[reg].isFloat = false;
+            intRegisters[reg].lastUsed = 0;
         }
-        
-        // Initialize float registers
         for (const auto& reg : availableFloatRegs) {
-            floatRegisters[reg] = {"", false, true, 0};
+            // *** FIX: Explicitly assign members instead of brace initialization ***
+            floatRegisters[reg].varNames.clear();
+            floatRegisters[reg].isFloat = true;
+            floatRegisters[reg].lastUsed = 0;
         }
         for (const auto& reg : argFloatRegs) {
-            floatRegisters[reg] = {"", false, true, 0};
+            // *** FIX: Explicitly assign members instead of brace initialization ***
+            floatRegisters[reg].varNames.clear();
+            floatRegisters[reg].isFloat = true;
+            floatRegisters[reg].lastUsed = 0;
         }
     }
 
     void resetRegisters() {
         for (auto& reg : intRegisters) {
-            reg.second = {"", false, false, 0};
+            // *** FIX: Explicitly assign members instead of brace initialization ***
+            reg.second.varNames.clear();
+            reg.second.isFloat = false;
+            reg.second.lastUsed = 0;
         }
         for (auto& reg : floatRegisters) {
-            reg.second = {"", false, true, 0};
+            // *** FIX: Explicitly assign members instead of brace initialization ***
+            reg.second.varNames.clear();
+            reg.second.isFloat = true;
+            reg.second.lastUsed = 0;
         }
     }
 
@@ -200,45 +214,59 @@ public:
                line.find("free: argument must be a pointer") != std::string::npos;
     }
 
-    // Register Allocation Methods
-    std::string getRegisterForVar(const std::string& var, bool preferFloat = false) {
-        bool isFloat = preferFloat || isFloatVar(var);
-        auto& registers = isFloat ? floatRegisters : intRegisters;
-        auto& availableRegs = isFloat ? availableFloatRegs : availableIntRegs;
-        
-        // Check if variable is already in a register
-        for (const auto& reg : availableRegs) {
-            if (registers[reg].varName == var) {
-                registers[reg].lastUsed = ++useCounter;
-                return reg;
+    std::string getRegisterForVar(const std::string& var, bool preferFloat = false, bool loadValue = true) {
+    bool isFloat = preferFloat || isFloatVar(var);
+    auto& registers = isFloat ? floatRegisters : intRegisters;
+    auto& availableRegs = isFloat ? availableFloatRegs : availableIntRegs;
+    
+    // Check if variable is already in a register
+    for (const auto& reg : availableRegs) {
+        if (registers[reg].varNames.count(var)) {
+            // *** FIX: If we need to load the value but the register contains stale data, reload it ***
+            if (loadValue && variableInfo.find(var) != variableInfo.end() && 
+                variableInfo[var].stackOffset != -1 && !variableInfo[var].dirty) {
+                // The variable exists on stack and register copy might be stale, reload it
+                output.push_back("    # Reloading " + var + " from stack to " + reg + " (stale register)\n");
+                if (isFloat) {
+                    output.push_back("    l.s " + reg + ", " + std::to_string(variableInfo[var].stackOffset) + "($fp)\n");
+                } else {
+                    output.push_back("    lw " + reg + ", " + std::to_string(variableInfo[var].stackOffset) + "($fp)\n");
+                }
             }
+            registers[reg].lastUsed = ++useCounter;
+            return reg;
         }
+    }
         
         // Find free register
         for (const auto& reg : availableRegs) {
-            if (registers[reg].varName.empty()) {
-                registers[reg].varName = var;
+            // *** OPTIMIZATION: Check varNames set ***
+            if (registers[reg].varNames.empty()) {
+                registers[reg].varNames.insert(var); // Add var to set
                 registers[reg].isFloat = isFloat;
                 registers[reg].lastUsed = ++useCounter;
-                registers[reg].dirty = false;
+                // *** OPTIMIZATION: Removed dirty flag update ***
                 
-                // *** FIX: Load from stack if variable exists there ***
-                if (variableInfo.find(var) != variableInfo.end() && variableInfo[var].stackOffset != -1) {
-                    output.push_back("    # Loading " + var + " from stack to " + reg + "\n");
-                    if (isFloat) {
-                        output.push_back("    l.s " + reg + ", " + std::to_string(variableInfo[var].stackOffset) + "($fp)\n");
-                    } else {
-                        output.push_back("    lw " + reg + ", " + std::to_string(variableInfo[var].stackOffset) + "($fp)\n");
+                // *** OPTIMIZATION: Only load if requested ***
+                if (loadValue) {
+                    if (variableInfo.find(var) != variableInfo.end() && variableInfo[var].stackOffset != -1) {
+                        output.push_back("    # Loading " + var + " from stack to " + reg + "\n");
+                        if (isFloat) {
+                            output.push_back("    l.s " + reg + ", " + std::to_string(variableInfo[var].stackOffset) + "($fp)\n");
+                        } else {
+                            output.push_back("    lw " + reg + ", " + std::to_string(variableInfo[var].stackOffset) + "($fp)\n");
+                        }
                     }
-                }
-                // Only check for global if not found on stack
-                else if (isGlobalVar(var)) {
-                    output.push_back("    # Loading global " + var + " into " + reg + "\n");
-                    if (isFloat) {
-                        output.push_back("    l.s " + reg + ", " + sanitizeName(var) + "\n");
-                    } else {
-                        output.push_back("    lw " + reg + ", " + sanitizeName(var) + "\n");
+                    else if (isGlobalVar(var)) {
+                        output.push_back("    # Loading global " + var + " into " + reg + "\n");
+                        if (isFloat) {
+                            output.push_back("    l.s " + reg + ", " + sanitizeName(var) + "\n");
+                        } else {
+                            output.push_back("    lw " + reg + ", " + sanitizeName(var) + "\n");
+                        }
                     }
+                } else {
+                     output.push_back("    # Allocating " + reg + " for " + var + " (no load)\n");
                 }
                 
                 // Update variable info
@@ -262,39 +290,43 @@ public:
             }
         }
         
-        // Spill the evicted variable
-        std::string evictedVar = registers[lruReg].varName;
-        if (!evictedVar.empty() && registers[lruReg].dirty) {
-            spillRegister(lruReg, evictedVar);
-        }
+        // *** OPTIMIZATION: Spill all dirty variables in the chosen register ***
+        spillRegister(lruReg);
         
-        // Update variable info for evicted variable
-        if (variableInfo.find(evictedVar) != variableInfo.end()) {
-            variableInfo[evictedVar].registers.erase(lruReg);
+        // *** OPTIMIZATION: Update variable info for ALL evicted variables ***
+        std::set<std::string> evictedVars = registers[lruReg].varNames;
+        for(const auto& evictedVar : evictedVars) {
+            if (variableInfo.find(evictedVar) != variableInfo.end()) {
+                variableInfo[evictedVar].registers.erase(lruReg);
+            }
         }
         
         // Assign register to new variable
-        registers[lruReg].varName = var;
+        registers[lruReg].varNames.clear(); // Clear old vars
+        registers[lruReg].varNames.insert(var); // Add new var
         registers[lruReg].isFloat = isFloat;
         registers[lruReg].lastUsed = ++useCounter;
-        registers[lruReg].dirty = false;
         
-        // Load from memory if available
-        if (variableInfo.find(var) != variableInfo.end() && variableInfo[var].stackOffset != -1) {
-            output.push_back("    # Loading " + var + " from stack to " + lruReg + "\n");
-            if (isFloat) {
-                output.push_back("    l.s " + lruReg + ", " + std::to_string(variableInfo[var].stackOffset) + "($fp)\n");
-            } else {
-                output.push_back("    lw " + lruReg + ", " + std::to_string(variableInfo[var].stackOffset) + "($fp)\n");
+        // *** OPTIMIZATION: Only load if requested ***
+        if (loadValue) {
+            if (variableInfo.find(var) != variableInfo.end() && variableInfo[var].stackOffset != -1) {
+                output.push_back("    # Loading " + var + " from stack to " + lruReg + "\n");
+                if (isFloat) {
+                    output.push_back("    l.s " + lruReg + ", " + std::to_string(variableInfo[var].stackOffset) + "($fp)\n");
+                } else {
+                    output.push_back("    lw " + lruReg + ", " + std::to_string(variableInfo[var].stackOffset) + "($fp)\n");
+                }
             }
-        }
-        else if (isGlobalVar(var)) {
-            output.push_back("    # Loading global " + var + " into " + lruReg + "\n");
-            if (isFloat) {
-                output.push_back("    l.s " + lruReg + ", " + sanitizeName(var) + "\n");
-            } else {
-                output.push_back("    lw " + lruReg + ", " + sanitizeName(var) + "\n");
+            else if (isGlobalVar(var)) {
+                output.push_back("    # Loading global " + var + " into " + lruReg + "\n");
+                if (isFloat) {
+                    output.push_back("    l.s " + lruReg + ", " + sanitizeName(var) + "\n");
+                } else {
+                    output.push_back("    lw " + lruReg + ", " + sanitizeName(var) + "\n");
+                }
             }
+        } else {
+            output.push_back("    # Allocating " + lruReg + " for " + var + " (no load)\n");
         }
         
         // Update variable info
@@ -307,15 +339,22 @@ public:
         return lruReg;
     }
 
-    void spillRegister(const std::string& reg, const std::string& var) {
-        auto& registers = floatRegisters.find(reg) != floatRegisters.end() ? floatRegisters : intRegisters;
-        bool isFloat = registers[reg].isFloat;
-        
-        // *** FIX: Only spill if variable is not a temporary ***
-        if (var.empty() || var[0] == 't' || var[0] == 'i') {
-            // Don't spill temporary variables
-            return;
+    void spillVariable(const std::string& reg, const std::string& var) {
+        // Don't spill temporary variables
+        if (var.empty() || var[0] == 't' || var[0] == 'i' || var[0] == 'f') {
+             // Check for temp float 'f' as well
+            if (var[0] == 'f' && var.length() > 1 && isdigit(var[1])) {
+                 return;
+            } else if (var[0] != 'f') {
+                return;
+            }
         }
+        
+        if (variableInfo.find(var) == variableInfo.end()) {
+            return; // No info, can't spill
+        }
+
+        bool isFloat = variableInfo[var].isFloat;
         
         if (isGlobalVar(var)) {
             // Spill to global memory
@@ -325,16 +364,9 @@ public:
             } else {
                 output.push_back("    sw " + reg + ", " + sanitizeName(var) + "\n");
             }
-            if (variableInfo.find(var) != variableInfo.end()) {
-                variableInfo[var].dirty = false;
-            }
         } else {
-            // Spill to stack (original behavior)
+            // Spill to stack
             // Ensure variable has stack allocation
-            if (variableInfo.find(var) == variableInfo.end()) {
-                allocateStackSpace(var);
-            }
-            
             if (variableInfo[var].stackOffset == -1) {
                 allocateStackSpace(var);
             }
@@ -345,8 +377,33 @@ public:
             } else {
                 output.push_back("    sw " + reg + ", " + std::to_string(variableInfo[var].stackOffset) + "($fp)\n");
             }
-            
-            variableInfo[var].dirty = false;
+        }
+        
+        variableInfo[var].dirty = false;
+    }
+
+    void spillRegister(const std::string& reg) {
+        RegisterInfo reg_info;
+        bool isFloatReg = false;
+
+        if (intRegisters.find(reg) != intRegisters.end()) {
+            reg_info = intRegisters[reg];
+            isFloatReg = false;
+        } else if (floatRegisters.find(reg) != floatRegisters.end()) {
+            reg_info = floatRegisters[reg];
+            isFloatReg = true;
+        } else {
+            return; // Not a spillable register
+        }
+
+        if (reg_info.varNames.empty()) {
+            return;
+        }
+
+        for (const auto& var : reg_info.varNames) {
+            if (variableInfo.find(var) != variableInfo.end() && variableInfo[var].dirty) {
+                spillVariable(reg, var);
+            }
         }
     }
 
@@ -366,30 +423,24 @@ public:
     }
 
     void markDirty(const std::string& var, const std::string& reg) {
-        if (floatRegisters.find(reg) != floatRegisters.end()) {
-            floatRegisters[reg].dirty = true;
-        } else if (intRegisters.find(reg) != intRegisters.end()) {
-            intRegisters[reg].dirty = true;
-        }
-        
-        if (variableInfo.find(var) != variableInfo.end()) {
+        // *** OPTIMIZATION: Only mark the VariableInfo as dirty ***
+        if (variableInfo.find(var) == variableInfo.end()) {
+            // Variable doesn't exist yet, create it
+            bool isFloat = floatRegisters.count(reg) > 0;
+            variableInfo[var] = {{reg}, -1, true, isFloat, false};
+        } else {
             variableInfo[var].dirty = true;
         }
     }
 
     void spillAllDirtyRegisters() {
-        // Spill dirty integer registers
+        // *** OPTIMIZATION: Use new spillRegister function ***
         for (const auto& reg : availableIntRegs) {
-            if (!intRegisters[reg].varName.empty() && intRegisters[reg].dirty) {
-                spillRegister(reg, intRegisters[reg].varName);
-            }
+            spillRegister(reg);
         }
         
-        // Spill dirty float registers
         for (const auto& reg : availableFloatRegs) {
-            if (!floatRegisters[reg].varName.empty() && floatRegisters[reg].dirty) {
-                spillRegister(reg, floatRegisters[reg].varName);
-            }
+            spillRegister(reg);
         }
     }
 
@@ -402,51 +453,57 @@ public:
     void invalidateTempRegisters() {
         // Invalidate ALL integer $t registers
         for (const auto& reg : availableIntRegs) {
-            std::string var = intRegisters[reg].varName;
-            if (!var.empty()) {
-                // If this var was in this register, it's not anymore
-                if (variableInfo.count(var)) {
-                    variableInfo[var].registers.erase(reg);
+            // *** OPTIMIZATION: Update for varNames set ***
+            std::set<std::string> vars = intRegisters[reg].varNames;
+            if (!vars.empty()) {
+                for(const auto& var : vars) {
+                    if (variableInfo.count(var)) {
+                        variableInfo[var].registers.erase(reg);
+                    }
                 }
-                // Clear the register state
-                intRegisters[reg] = {"", false, false, 0}; 
+                intRegisters[reg].varNames.clear();
             }
         }
         
         // Invalidate ALL float $t registers
         for (const auto& reg : availableFloatRegs) {
-            std::string var = floatRegisters[reg].varName;
-            if (!var.empty()) {
-                if (variableInfo.count(var)) {
-                    variableInfo[var].registers.erase(reg);
+            // *** OPTIMIZATION: Update for varNames set ***
+            std::set<std::string> vars = floatRegisters[reg].varNames;
+            if (!vars.empty()) {
+                for(const auto& var : vars) {
+                    if (variableInfo.count(var)) {
+                        variableInfo[var].registers.erase(reg);
+                    }
                 }
-                floatRegisters[reg] = {"", false, true, 0};
+                floatRegisters[reg].varNames.clear();
             }
         }
         
-        // *** FIX: Also invalidate $a registers for good measure ***
+        // Also invalidate $a registers
         for (const auto& reg : argIntRegs) {
-            std::string var = intRegisters[reg].varName;
-            if (!var.empty()) {
-                if (variableInfo.count(var)) {
-                    variableInfo[var].registers.erase(reg);
+            std::set<std::string> vars = intRegisters[reg].varNames;
+            if (!vars.empty()) {
+                for(const auto& var : vars) {
+                    if (variableInfo.count(var)) {
+                        variableInfo[var].registers.erase(reg);
+                    }
                 }
-                intRegisters[reg] = {"", false, false, 0};
+                intRegisters[reg].varNames.clear();
             }
         }
         
         for (const auto& reg : argFloatRegs) {
-            std::string var = floatRegisters[reg].varName;
-            if (!var.empty()) {
-                if (variableInfo.count(var)) {
-                    variableInfo[var].registers.erase(reg);
+            std::set<std::string> vars = floatRegisters[reg].varNames;
+            if (!vars.empty()) {
+                for(const auto& var : vars) {
+                    if (variableInfo.count(var)) {
+                        variableInfo[var].registers.erase(reg);
+                    }
                 }
-                floatRegisters[reg] = {"", false, true, 0};
+                floatRegisters[reg].varNames.clear();
             }
         }
     }
-    // **********************************
-
     // Function argument handling for >4 arguments
     void setupFunctionArgs(int numArgs, const std::vector<std::string>& args, bool isFloatCall) {
         int intArgCount = 0;
@@ -463,21 +520,20 @@ public:
             // Args are pushed in reverse, so access them in reverse
             std::string arg = args[numArgs - 1 - i];
             bool isFloat = isFloatVar(arg);
+            // *** OPTIMIZATION: Load source arg (loadValue=true) ***
+            std::string argReg = getRegisterForVar(arg, isFloat, true); 
             
             if (i < 4) {
                 // First 4 arguments go in registers
                 if (isFloat && floatArgCount < 2) {
                     std::string reg = argFloatRegs[floatArgCount++];
-                    std::string argReg = getRegisterForVar(arg, true);
                     output.push_back("    mov.s " + reg + ", " + argReg + "  # Float argument " + std::to_string(i+1) + "\n");
                 } else if (!isFloat && intArgCount < 4) {
                     std::string reg = argIntRegs[intArgCount++];
-                    std::string argReg = getRegisterForVar(arg, false);
                     output.push_back("    move " + reg + ", " + argReg + "  # Integer argument " + std::to_string(i+1) + "\n");
                 } else {
                     // Fall back to stack for mixed types beyond available registers
-                    int stackOffset = -(i - 3) * 4; // Arguments 5+ start at -4, then -8, etc.
-                    std::string argReg = getRegisterForVar(arg, isFloat);
+                    int stackOffset = -(i - 3) * 4; 
                     output.push_back("    # Argument " + std::to_string(i+1) + " on stack at offset " + std::to_string(stackOffset) + "\n");
                     if (isFloat) {
                         output.push_back("    s.s " + argReg + ", " + std::to_string(stackOffset) + "($sp)\n");
@@ -487,8 +543,7 @@ public:
                 }
             } else {
                 // Arguments 5+ go on stack
-                int stackOffset = -(i - 3) * 4; // Arguments 5+ start at -4, then -8, etc.
-                std::string argReg = getRegisterForVar(arg, isFloat);
+                int stackOffset = -(i - 3) * 4; 
                 output.push_back("    # Argument " + std::to_string(i+1) + " on stack at offset " + std::to_string(stackOffset) + "\n");
                 if (isFloat) {
                     output.push_back("    s.s " + argReg + ", " + std::to_string(stackOffset) + "($sp)\n");
@@ -536,19 +591,16 @@ public:
     std::string convertInstruction(const std::string& line) {
         std::string result = "";
         
-        // Check for parser errors first
         if (hasParserError(line)) {
             hasParserErrors = true;
             parserErrors.push_back(line);
             return "";
         }
         
-        // Skip comments and declarations
         if (line.find("//") == 0) {
             if (line.find("Variable declaration:") != std::string::npos) {
                 parseVariableDeclaration(line);
             }
-            // *** FIX 1: Handle Parameter comments ***
             else if (line.find("Parameter:") != std::string::npos && !currentFunc.empty()) {
                 std::regex paramComment(R"(//\s*Parameter:\s*(\w+))");
                 std::smatch paramMatch;
@@ -556,19 +608,18 @@ public:
                     std::string paramName = paramMatch[1];
                     bool isParamFloat = isFloatVar(paramName);
                     
-                    // *** FIX: Allocate stack space for parameter first ***
                     allocateStackSpace(paramName);
                     
-                    std::string destReg = getRegisterForVar(paramName, isParamFloat);
+                    // *** OPTIMIZATION: Get dest reg (loadValue=false) ***
+                    // We are writing *to* this register, not reading *from* it
+                    std::string destReg = getRegisterForVar(paramName, isParamFloat, false);
                     
                     if (isParamFloat) {
                         if (floatParamIndex < argFloatRegs.size()) {
                             output.push_back("    mov.s " + destReg + ", " + argFloatRegs[floatParamIndex] + "  # Copy param " + paramName + "\n");
-                            // *** FIX: Store parameter to stack immediately ***
                             output.push_back("    s.s " + destReg + ", " + std::to_string(variableInfo[paramName].stackOffset) + "($fp)  # Store param " + paramName + " to stack\n");
                             floatParamIndex++;
                         } else {
-                            // Parameter is on the stack
                             int stackOffset = 8 + (floatParamIndex - argFloatRegs.size()) * 4;
                             output.push_back("    l.s " + destReg + ", " + std::to_string(stackOffset) + "($fp)  # Load stack param " + paramName + "\n");
                             output.push_back("    s.s " + destReg + ", " + std::to_string(variableInfo[paramName].stackOffset) + "($fp)  # Store param " + paramName + " to local stack\n");
@@ -577,11 +628,9 @@ public:
                     } else {
                         if (intParamIndex < argIntRegs.size()) {
                             output.push_back("    move " + destReg + ", " + argIntRegs[intParamIndex] + "  # Copy param " + paramName + "\n");
-                            // *** FIX: Store parameter to stack immediately ***
                             output.push_back("    sw " + destReg + ", " + std::to_string(variableInfo[paramName].stackOffset) + "($fp)  # Store param " + paramName + " to stack\n");
                             intParamIndex++;
                         } else {
-                            // Parameter is on the stack
                             int stackOffset = 8 + (intParamIndex - argIntRegs.size()) * 4;
                             output.push_back("    lw " + destReg + ", " + std::to_string(stackOffset) + "($fp)  # Load stack param " + paramName + "\n");
                             output.push_back("    sw " + destReg + ", " + std::to_string(variableInfo[paramName].stackOffset) + "($fp)  # Store param " + paramName + " to local stack\n");
@@ -591,42 +640,29 @@ public:
                     markDirty(paramName, destReg);
                 }
             }
-            // ***************************************
             return "# " + line + "\n";
         }
         
-        // Function begin/end
         if (line.find("BeginFunc") != std::string::npos) {
             std::regex funcRegex(R"(BeginFunc\s+(\w+))");
-            
             std::smatch match;
             if (std::regex_search(line, match, funcRegex)) {
                 currentFunc = match[1];
                 variableInfo.clear();
-                stackOffset = -8; // Start after ra/fp
+                stackOffset = -8; 
                 argStackOffset = 0;
-                // *** FIX 1: Initialized parameter indices ***
                 intParamIndex = 0;
                 floatParamIndex = 0;
-                // ******************************************
                 paramStack.clear();
                 resetRegisters();
                 
                 output.push_back("\n" + sanitizeName(currentFunc) + ":\n");
                 
-                // *** FIX: Allocate space for ra/fp AND parameters ***
                 output.push_back("    addiu $sp, $sp, -8    # Allocate space for ra/fp\n");
                 output.push_back("    sw $ra, 4($sp)        # Save return address\n");
                 output.push_back("    sw $fp, 0($sp)        # Save frame pointer\n");
                 output.push_back("    move $fp, $sp         # Set new frame pointer\n");
                 
-                // *** FIX: Store parameters on stack immediately ***
-                if (intParamIndex > 0 || floatParamIndex > 0) {
-                    output.push_back("    # Store parameters on stack\n");
-                    // We'll handle parameter storage in the parameter comments
-                }
-                
-                // Add placeholder for stack allocation
                 stackAllocPlaceholderIndex = output.size();
                 output.push_back("    # STACK_ALLOC_PLACEHOLDER\n");
             }
@@ -636,19 +672,12 @@ public:
         if (line.find("EndFunc") != std::string::npos) {
             spillAllDirtyRegisters();
             
-            std::regex funcRegex(R"(EndFunc\s*)");
-            
-            // *** FIX: Add return label before epilogue ***
             output.push_back(sanitizeName(currentFunc) + "_return:\n");
             
-            // *** FIX 3 (Modified): Calculate *only* local stack size ***
-            // stackOffset starts at -8. If it's now -28, we need 20 bytes.
-            // The space used is (-stackOffset) - 8.
-            int localStackSize = ((-stackOffset - 8) + 7) & ~7; // (28 - 8 = 20) -> 24 bytes
+            int localStackSize = ((-stackOffset - 8) + 7) & ~7; 
             
             if (stackAllocPlaceholderIndex != -1 && stackAllocPlaceholderIndex < output.size()) {
                 if (localStackSize > 0) {
-                    // This instruction is now AFTER $fp is set
                     output[stackAllocPlaceholderIndex] = "    addiu $sp, $sp, -" + std::to_string(localStackSize) + "    # Allocate stack for locals\n";
                 } else {
                     output[stackAllocPlaceholderIndex] = "    # No local stack needed\n";
@@ -657,7 +686,6 @@ public:
             stackAllocPlaceholderIndex = -1; 
             
             output.push_back("    # Function epilogue\n");
-            // Deallocate locals first by resetting $sp to $fp
             output.push_back("    move $sp, $fp         # Reset $sp to $fp (deallocates locals)\n");
             output.push_back("    lw $fp, 0($sp)        # Restore frame pointer\n");
             output.push_back("    lw $ra, 4($sp)        # Restore return address\n");
@@ -674,7 +702,6 @@ public:
             return "";
         }
         
-        // Parameter pushing
         if (line.find("param") == 0) {
             std::regex paramRegex(R"(param\s+(\w+))");
             std::smatch match;
@@ -685,7 +712,6 @@ public:
             return "# " + line + "\n";
         }
 
-        // Function calls MUST be checked before simple assignments
         std::regex callRegex(R"((\w+)\s*=\s*call\s*(\w+)\s*,\s*(\d+))");
         std::smatch match;
         if (std::regex_search(line, match, callRegex)) {
@@ -697,23 +723,19 @@ public:
             return "# " + line + "\n";
         }
 
-        // Check for binary operations before simple assignments.
-        // Group 1: dest, Group 2: left, Group 3: op, Group 4: right, Group 5: type
-        // ***FIXED***: Added bitwise operators &, |, ^, <<, >> to regex
         std::regex binOpRegex(R"((\w+)\s*=\s*(\w+)\s*(<<|>>|[\+\-\*\/&\|\^])\s*([\w\.-]+)(?:\s*\[(\w+)\])?)");
         if (std::regex_search(line, match, binOpRegex)) {
             std::string dest = match[1];
             std::string left = match[2];
             std::string op = match[3];
             std::string right = match[4];
-            std::string type = match[5].str(); // Get optional type
+            std::string type = match[5].str();
             
             if (type == "FLOAT") {
                 convertFloatOperation(dest, left, op, right);
             } else if (type == "INT") {
                 convertIntOperation(dest, left, op, right);
             } else {
-                // ***FIXED***: Infer type from OPERANDS (C-style promotion), not destination
                 if (isFloatVar(left) || isFloatVar(right) || std::regex_match(left, std::regex(R"(-?\d+\.\d+)")) || std::regex_match(right, std::regex(R"(-?\d+\.\d+)"))) {
                     output.push_back("    # Inferred type as FLOAT from operands\n");
                     convertFloatOperation(dest, left, op, right);
@@ -725,8 +747,6 @@ public:
             return "# " + line + "\n";
         }
         
-        // ***FIX 1a:*** Moved comparison regex *before* simple assignment
-        // Comparison operations
         std::regex cmpRegex(R"((\w+)\s*=\s*([\w\.-]+)\s*([><=!]+)\s*([\w\.-]+)\s*\[(\w+)\])");
         if (std::regex_search(line, match, cmpRegex)) {
             std::string dest = match[1];
@@ -735,7 +755,6 @@ public:
             std::string right = match[4];
             std::string type = match[5];
             
-            // ***FIXED***: Logic is correct. If either op is float, use float comparison.
             if (type == "FLOAT" || isFloatVar(left) || isFloatVar(right) || std::regex_match(left, std::regex(R"(-?\d+\.\d+)")) || std::regex_match(right, std::regex(R"(-?\d+\.\d+)"))) {
                 convertFloatComparison(dest, left, op, right);
             } else {
@@ -744,28 +763,20 @@ public:
             return "# " + line + "\n";
         }
         
-        // ***FIX 1b:*** Modified simpleAssign regex to exclude comparison ops
         std::regex simpleAssign(R"((\w+)\s*=\s*([^;\[\+\-\*\/><=!]+)(?:\s*\[([^\]]+)\])?)");
         
         if (std::regex_search(line, match, simpleAssign)) {
 
-            // Global assignment check
             if (currentFunc.empty()) {
-                // This is a GLOBAL assignment, not a local one.
-                // Store the value for the .data section instead of generating instructions.
                 std::string dest = match[1];
                 std::string src = match[2];
                 src = std::regex_replace(src, std::regex(R"(\s*$)"), "");
-
-                globalInitialValues[dest] = src; // Store the initial value
-                
-                // Pre-register any constants associated with this global value
+                globalInitialValues[dest] = src;
                 if (src.find("\"") != std::string::npos) {
                     getStringConstant(src);
                 } else if (std::regex_match(src, std::regex(R"(-?\d+\.\d+)"))) {
                     getFloatConstant(src);
                 }
-
                 return "# " + line + " (Global assignment - storing for .data)\n";
             }
             
@@ -775,34 +786,48 @@ public:
             
             src = std::regex_replace(src, std::regex(R"(\s*$)"), "");
 
+            // Handle &var (address-of)
             if (src.rfind("&", 0) == 0) {
-                std::string varName = src.substr(1); // Get name after '&'
-                std::string destReg = getRegisterForVar(dest, false); // Addresses are ints
+                std::string varName = src.substr(1);
+                // *** OPTIMIZATION: Get dest reg (loadValue=false) ***
+                std::string destReg = getRegisterForVar(dest, false, false); 
 
-                // Case 1: Address of a string constant (e.g., "&\"%d,%d\"")
                 if (varName.front() == '"') {
-                    std::string label = getStringConstant(varName); // This function handles the quotes
-                    
+                    std::string label = getStringConstant(varName);
                     output.push_back("    la " + destReg + ", " + label + "  # " + line);
-                    
-                    // Store the *actual string value* for scanf to find later
                     globalInitialValues[dest] = varName; 
                 }
-                // Case 2: Address of a global variable (e.g., "&a")
                 else if (globalVars.count(varName)) {
-                    // Generate the correct "Load Address" instruction
                     output.push_back("    la " + destReg + ", " + sanitizeName(varName) + "  # " + line);
                 }
-                // Case 3: Address of a local/stack variable (e.g., "&x")
                 else {
-                    // This variable MUST be on the stack to take its address
+                    // *** OPTIMIZATION: Store-on-& (for scanf) ***
+                    // 1. Force allocation
                     allocateStackSpace(varName);
+                    
+                    // 2. Spill if dirty
+                    if (variableInfo.find(varName) != variableInfo.end() && variableInfo[varName].dirty) {
+                        for(const auto& reg : variableInfo[varName].registers) {
+                            output.push_back("    # Storing " + varName + " before taking address (for scanf)\n");
+                            spillVariable(reg, varName); // This also clears dirty flag
+                            break; // Only need to spill once
+                        }
+                    }
+                    // 3. Invalidate all registers holding varName
+                    if (variableInfo.find(varName) != variableInfo.end()) {
+                         output.push_back("    # Invalidating registers for " + varName + "\n");
+                        for(const auto& reg : variableInfo[varName].registers) {
+                            (variableInfo[varName].isFloat ? floatRegisters : intRegisters)[reg].varNames.erase(varName);
+                        }
+                        variableInfo[varName].registers.clear();
+                    }
+
                     int offset = variableInfo[varName].stackOffset;
                     output.push_back("    addiu " + destReg + ", $fp, " + std::to_string(offset) + " # " + line);
                 }
 
                 markDirty(dest, destReg);
-                return "# " + line + "\n"; // End processing for this line
+                return "# " + line + "\n";
             }
             
             if (!type.empty()) {
@@ -810,128 +835,133 @@ public:
             }
             
             bool isDestFloat = isFloatVar(dest);
-            std::string destReg = getRegisterForVar(dest, isDestFloat);
             
             // Check for LITERALS first
             
-            // Case 1: Source is a float literal (e.g., "3.5", "-0.1")
+            // Case 1: Source is a float literal
             if (std::regex_match(src, std::regex(R"(-?\d+\.\d+)"))) {
+                // *** OPTIMIZATION: Get dest reg (loadValue=false) ***
+                std::string destReg = getRegisterForVar(dest, isDestFloat, false);
                 std::string floatLabel = getFloatConstant(src);
                 if (isDestFloat) {
-                    // float_dest = float_literal
                     output.push_back("    l.s " + destReg + ", " + floatLabel + " # " + dest + " = " + src + "\n");
                 } else {
-                    // int_dest = float_literal (truncation)
-                    std::string tempFloatReg = "$f31"; // Use a reserved temp
+                    std::string tempFloatReg = "$f31"; 
                     output.push_back("    l.s " + tempFloatReg + ", " + floatLabel + "\n");
                     output.push_back("    trunc.w.s " + tempFloatReg + ", " + tempFloatReg + "\n");
                     output.push_back("    mfc1 " + destReg + ", " + tempFloatReg + " # " + dest + " = (int)" + src + "\n");
                 }
-            }
-            // Case 2: Source is an integer literal (e.g., "10", "-5")
+                markDirty(dest, destReg);
+            } 
+            // Case 2: Source is an integer literal
             else if (std::regex_match(src, std::regex(R"(-?\d+)"))) {
+                // *** OPTIMIZATION: Get dest reg (loadValue=false) ***
+                std::string destReg = getRegisterForVar(dest, isDestFloat, false);
                 if (isDestFloat) {
-                    // float_dest = int_literal (conversion)
-                    std::string tempIntReg = "$v1"; // Use assembler temp
+                    std::string tempIntReg = "$v1";
                     output.push_back("    li " + tempIntReg + ", " + src + "\n");
                     output.push_back("    mtc1 " + tempIntReg + ", " + destReg + " # " + dest + " = " + src + ".0\n");
                     output.push_back("    cvt.s.w " + destReg + ", " + destReg + "\n");
                 } else {
-                    // int_dest = int_literal
                     output.push_back("    li " + destReg + ", " + src + " # " + dest + " = " + src + "\n");
                 }
-            }
-            // Case 3: Source is a character literal (e.g., "'x'")
+                markDirty(dest, destReg);
+            } 
+            // Case 3: Source is a character literal
             else if (src.find("'") == 0 && src.length() == 3) {
+                // *** OPTIMIZATION: Get dest reg (loadValue=false) ***
+                std::string destReg = getRegisterForVar(dest, isDestFloat, false);
                 char c = src[1];
                 if (isDestFloat) {
-                    // float_dest = char_literal (conversion)
-                    std::string tempIntReg = "$v1"; // Use assembler temp
+                    std::string tempIntReg = "$v1";
                     output.push_back("    li " + tempIntReg + ", " + std::to_string((int)c) + "\n");
                     output.push_back("    mtc1 " + tempIntReg + ", " + destReg + " # " + dest + " = (float)'" + c + "'\n");
                     output.push_back("    cvt.s.w " + destReg + ", " + destReg + "\n");
                 } else {
-                    // int_dest = char_literal
                     output.push_back("    li " + destReg + ", " + std::to_string((int)c) + " # " + dest + " = '" + std::string(1, c) + "'\n");
                 }
-            }
-            // Case 4: Source is a string literal (e.g., ""%f %d"")
+                markDirty(dest, destReg);
+            } 
+            // Case 4: Source is a string literal
             else if (src.find("\"") == 0) {
+                // *** OPTIMIZATION: Get dest reg (loadValue=false) ***
+                std::string destReg = getRegisterForVar(dest, isDestFloat, false);
                 std::string stringLabel = getStringConstant(src);
-                // Store the literal value for scanf/printf to find
                 globalInitialValues[dest] = src;
-                
                 if (isDestFloat) {
-                    // This is invalid, but we'll treat it as loading the address
                     output.push_back("    # WARNING: Assigning string address to float var\n");
                     output.push_back("    la " + destReg + ", " + stringLabel + " # " + dest + " = &\"...\"\n");
                 } else {
-                    // int_dest = string_address
                     output.push_back("    la " + destReg + ", " + stringLabel + " # " + dest + " = &\"...\"\n");
                 }
-            }
+                markDirty(dest, destReg);
+            } 
             // Case 5: Source is a VARIABLE
             else {
                 bool isSrcFloat = isFloatVar(src);
-                std::string srcReg = getRegisterForVar(src, isSrcFloat);
                 
-                if (isDestFloat && !isSrcFloat) {
-                    // float_dest = int_var
-                    output.push_back("    mtc1 " + srcReg + ", " + destReg + " # " + dest + " = (float)" + src + "\n");
-                    output.push_back("    cvt.s.w " + destReg + ", " + destReg + "\n");
-                } else if (!isDestFloat && isSrcFloat) {
-                    // int_dest = float_var
-                    std::string tempFloatReg = srcReg;
-                    output.push_back("    trunc.w.s " + tempFloatReg + ", " + tempFloatReg + "\n");
-                    output.push_back("    mfc1 " + destReg + ", " + tempFloatReg + " # " + dest + " = (int)" + src + "\n");
-                } else if (isDestFloat && isSrcFloat) {
-                    // float_dest = float_var
-                    output.push_back("    mov.s " + destReg + ", " + srcReg + " # " + dest + " = " + src + "\n");
+                // *** FIX: Replace problematic aliasing with actual move instructions ***
+                if (isDestFloat == isSrcFloat) {
+                    // Get source register (load the value)
+                    std::string srcReg = getRegisterForVar(src, isSrcFloat, true);
+                    // Get destination register (don't load old value)
+                    std::string destReg = getRegisterForVar(dest, isDestFloat, false);
+                    
+                    if (isDestFloat) {
+                        output.push_back("    mov.s " + destReg + ", " + srcReg + " # " + dest + " = " + src + "\n");
+                    } else {
+                        output.push_back("    move " + destReg + ", " + srcReg + " # " + dest + " = " + src + "\n");
+                    }
+                    markDirty(dest, destReg);
                 } else {
-                    // int_dest = int_var
-                    output.push_back("    move " + destReg + ", " + srcReg + " # " + dest + " = " + src + "\n");
+                    // Handle typecasting as before
+                    std::string srcReg = getRegisterForVar(src, isSrcFloat, true);
+                    std::string destReg = getRegisterForVar(dest, isDestFloat, false);
+
+                    if (isDestFloat && !isSrcFloat) {
+                        // float_dest = int_var
+                        output.push_back("    mtc1 " + srcReg + ", " + destReg + " # " + dest + " = (float)" + src + "\n");
+                        output.push_back("    cvt.s.w " + destReg + ", " + destReg + "\n");
+                    } else if (!isDestFloat && isSrcFloat) {
+                        // int_dest = float_var
+                        std::string tempFloatReg = srcReg;
+                        output.push_back("    trunc.w.s " + tempFloatReg + ", " + tempFloatReg + "\n");
+                        output.push_back("    mfc1 " + destReg + ", " + tempFloatReg + " # " + dest + " = (int)" + src + "\n");
+                    }
+                    markDirty(dest, destReg);
                 }
             }
-            
-            markDirty(dest, destReg);
             return "# " + line + "\n";
         }
-        
-        // Binary operations
-        // (This block is now moved up)
-        
-        // Comparison operations
-        // (This block is now moved up)
         
         // Conditional jumps
         std::regex condRegex(R"(ifFalse\s*(\w+)\s*goto\s*(\w+))");
         if (std::regex_search(line, match, condRegex)) {
             std::string condition = match[1];
             std::string label = match[2];
-            std::string condReg = getRegisterForVar(condition, false);
-            output.push_back("    beq " + condReg + ", $zero, " + sanitizeName(label) + "  # ifFalse " + condition + "\n");
+            // *** OPTIMIZATION: Get cond reg (loadValue=true) ***
+            std::string condReg = getRegisterForVar(condition, false, true);
+            output.push_back("    beq " + condReg + ", $zero, " + sanitizeName(label) + " # ifFalse " + condition + "\n");
             return "# " + line + "\n";
         }
-
-        // *** NEW FIX HERE ***
-        // Conditional jumps (if)
+        
         std::regex condTrueRegex(R"(if\s*(\w+)\s*goto\s*(\w+))");
         if (std::regex_search(line, match, condTrueRegex)) {
             std::string condition = match[1];
             std::string label = match[2];
-            std::string condReg = getRegisterForVar(condition, false);
-            // Branch if the condition is TRUE (not zero)
-            output.push_back("    bne " + condReg + ", $zero, " + sanitizeName(label) + "  # if " + condition + "\n");
+            // *** OPTIMIZATION: Get cond reg (loadValue=true) ***
+            std::string condReg = getRegisterForVar(condition, false, true);
+            output.push_back("    bne " + condReg + ", $zero, " + sanitizeName(label) + " # if " + condition + "\n");
             return "# " + line + "\n";
         }
-        // *** END NEW FIX ***
-
+        
         // Unconditional jumps
         if (line.find("goto") == 0) {
             std::regex gotoRegex(R"(goto\s*(\w+))");
             std::smatch match;
             if (std::regex_search(line, match, gotoRegex)) {
                 std::string label = match[1];
+                spillAllDirtyRegisters(); // Spill before all jumps
                 output.push_back("    j " + sanitizeName(label) + "\n");
             }
             return "# " + line + "\n";
@@ -939,463 +969,374 @@ public:
         
         // Labels
         if (std::regex_match(line, std::regex(R"(\w+:)"))) {
-            spillAllDirtyRegisters(); // Spill before labels
+            spillAllDirtyRegisters();
             std::string label = line.substr(0, line.length() - 1);
             output.push_back(sanitizeName(label) + ":\n");
-            return "# " + line + " (Label)\n"; // Return a non-empty string
+            return "# " + line + " (Label)\n"; 
         }
         
         // Return statement
-        // ####################################################################
-        // #                            BEGIN FIX                             #
-        // ####################################################################
         std::regex returnRegex(R"(return\s+(.+))");
         if (std::regex_search(line, match, returnRegex)) {
             std::string returnValue = match[1];
             
-            // Check if the return value is a literal
-            
-            // Case 1: Integer literal (e.g., "1", "-5")
             if (std::regex_match(returnValue, std::regex(R"(-?\d+)"))) {
-                output.push_back("    li $v0, " + returnValue + "  # Return value\n");
-            }
-            // Case 2: Float literal (e.g., "1.0", "-0.5")
+                output.push_back("    li $v0, " + returnValue + " # Return value\n");
+            } 
             else if (std::regex_match(returnValue, std::regex(R"(-?\d+\.\d+)"))) {
                 std::string floatLabel = getFloatConstant(returnValue);
-                output.push_back("    l.s $v0, " + floatLabel + "  # Return float literal\n");
+                output.push_back("    l.s $f0, " + floatLabel + " # Return value\n");
+            } 
+            else if (returnValue.find("'") == 0 && returnValue.length() == 3) {
+                 char c = returnValue[1];
+                 output.push_back("    li $v0, " + std::to_string((int)c) + " # Return value '" + c + "'\n");
             }
-            // Case 3: It's a VARIABLE (original logic)
             else {
                 bool isFloat = isFloatVar(returnValue);
-                std::string reg = getRegisterForVar(returnValue, isFloat);
-                
+                // *** OPTIMIZATION: Get return val reg (loadValue=true) ***
+                std::string reg = getRegisterForVar(returnValue, isFloat, true);
                 if (isFloat) {
-                    output.push_back("    mov.s $v0, " + reg + "  # Return float value\n");
+                    output.push_back("    mov.s $f0, " + reg + " # Return value " + returnValue + "\n");
                 } else {
-                    output.push_back("    move $v0, " + reg + "  # Return value\n");
+                    output.push_back("    move $v0, " + reg + " # Return value " + returnValue + "\n");
                 }
             }
             
-            output.push_back("    j " + currentFunc + "_return  # Jump to epilogue\n");
-            return "# " + line + "\n";
-        }
-        // ####################################################################
-        // #                             END FIX                              #
-        // ####################################################################
-        
-        // Handle scanf
-        if (line.find("scanf") != std::string::npos) {
-            output.push_back("    # scanf call\n");
-            output.push_back("    li $v0, 5    # Read integer\n"); // Assuming int for simplicity
-            output.push_back("    syscall\n");
-            // Result is in $v0, store it
-            // This is a simplified example. A full implementation would
-            // parse the format string and variable addresses.
-            
-            // In a real implementation:
-            // 1. Get the format string (e.g., from i17)
-            // 2. Get the variable address (e.g., from param)
-            // 3. Use li $v0, 5 (read_int), 6 (read_float), 8 (read_string), etc.
-            // 4. Store $v0 into the address
-        }
-        
-        // Handle printf (simplified)
-        if (line.find("printf") != std::string::npos) {
-            output.push_back("    # printf call\n");
-            // Assuming two params: a value (e.g., 'c') and a format string (e.g., i17)
-            
-            std::string valParam = paramStack[paramStack.size() - 2]; // 'c'
-            std::string fmtParam = paramStack[paramStack.size() - 1]; // i17 (which holds "%d\n")
-            
-            // This is a hacky simplification based on the input TAC
-            // A real version would analyze the format string
-            
-            if (globalInitialValues[fmtParam] == "\"%d\\n\"") {
-                std::string valReg = getRegisterForVar(valParam, false);
-                output.push_back("    li $v0, 1        # Print integer\n");
-                output.push_back("    move $a0, " + valReg + "\n");
-                output.push_back("    syscall\n");
-                
-                // Print the newline
-                output.push_back("    li $v0, 4        # Print final string chunk\n");
-                output.push_back("    la $a0, string_const_1 # string_const_1 is \"\\n\"\n");
-                output.push_back("    syscall\n");
-            } else if (globalInitialValues[fmtParam] == "\"%f\\n\"") {
-                std::string valReg = getRegisterForVar(valParam, true);
-                output.push_back("    li $v0, 2        # Print float\n");
-                output.push_back("    mov.s $f12, " + valReg + "\n");
-                output.push_back("    syscall\n");
-                
-                // Print the newline
-                output.push_back("    li $v0, 4        # Print final string chunk\n");
-                output.push_back("    la $a0, string_const_1 # string_const_1 is \"\\n\"\n");
-                output.push_back("    syscall\n");
-            } else {
-                 // Fallback for other strings
-                std::string fmtReg = getRegisterForVar(fmtParam, false); // It's an address
-                output.push_back("    li $v0, 4        # Print string\n");
-                output.push_back("    move $a0, " + fmtReg + "\n");
-                output.push_back("    syscall\n");
-            }
-        }
-        
-        // Malloc
-        if (line.find("malloc") != std::string::npos) {
-            std::string destReg = getRegisterForVar(line.substr(0, line.find(" =")), false);
-            std::string sizeVar = paramStack.back();
-            std::string sizeReg = getRegisterForVar(sizeVar, false);
-            
-            output.push_back("    move $a0, " + sizeReg + "    # Malloc size\n");
-            output.push_back("    li $v0, 9          # sbrk (malloc)\n");
-            output.push_back("    syscall\n");
-            output.push_back("    move " + destReg + ", $v0    # Store allocated address\n");
-            markDirty(line.substr(0, line.find(" =")), destReg);
-        }
-        
-        // Free
-        if (line.find("free") != std::string::npos) {
-            // SPIM doesn't *really* have 'free'. This is a no-op.
-            output.push_back("    # 'free' call (no-op in SPIM)\n");
-        }
-        
-        // Array/Pointer Access
-        std::regex storeRegex(R"(\*\((\w+)\)\s*=\s*(\w+))"); // *(dest) = src
-        if (std::regex_search(line, match, storeRegex)) {
-            std::string destAddrVar = match[1];
-            std::string srcVar = match[2];
-            
-            std::string destAddrReg = getRegisterForVar(destAddrVar, false);
-            
-            bool isFloat = isFloatVar(srcVar);
-            std::string srcReg = getRegisterForVar(srcVar, isFloat);
-            
-            if (isFloat) {
-                output.push_back("    s.s " + srcReg + ", 0(" + destAddrReg + ")  # *(dest) = src\n");
-            } else {
-                output.push_back("    sw " + srcReg + ", 0(" + destAddrReg + ")  # *(dest) = src\n");
-            }
+            spillAllDirtyRegisters();
+            output.push_back("    j " + sanitizeName(currentFunc) + "_return # Jump to epilogue\n");
             return "# " + line + "\n";
         }
         
-        std::regex loadRegex(R"((\w+)\s*=\s*\*\((\w+)\))"); // dest = *(src)
-        if (std::regex_search(line, match, loadRegex)) {
-            std::string destVar = match[1];
-            std::string srcAddrVar = match[2];
-            
-            std::string srcAddrReg = getRegisterForVar(srcAddrVar, false);
-            
-            bool isFloat = isFloatVar(destVar);
-            std::string destReg = getRegisterForVar(destVar, isFloat);
-            
-            if (isFloat) {
-                output.push_back("    l.s " + destReg + ", 0(" + srcAddrReg + ")  # dest = *(src)\n");
-            } else {
-                output.push_back("    lw " + destReg + ", 0(" + srcAddrReg + ")  # dest = *(src)\n");
-            }
-            markDirty(destVar, destReg);
+        // Return without value
+        if (line.find("return") == 0) {
+            spillAllDirtyRegisters();
+            output.push_back("    j " + sanitizeName(currentFunc) + "_return # Jump to epilogue\n");
             return "# " + line + "\n";
         }
 
-        // Handle array indexing (e.g., x = y[i])
-        // x = y + i*4  (for int)
-        // t1 = i * 4
-        // t2 = y + t1
-        // x = *t2
+        // Store (e.g., *a = x)
+        std::regex storeRegex(R"(\*(\w+)\s*=\s*([\w\.-]+)\s*\[(\w+)\])");
+        if (std::regex_search(line, match, storeRegex)) {
+            std::string ptr = match[1];
+            std::string src = match[2];
+            std::string type = match[3];
+            
+            // *** OPTIMIZATION: Get regs (loadValue=true) ***
+            std::string ptrReg = getRegisterForVar(ptr, false, true);
+            
+            if (type == "FLOAT") {
+                std::string srcReg = getRegisterForVar(src, true, true);
+                output.push_back("    s.s " + srcReg + ", 0(" + ptrReg + ")  # *" + ptr + " = " + src + "\n");
+            } else {
+                std::string srcReg = getRegisterForVar(src, false, true);
+                output.push_back("    sw " + srcReg + ", 0(" + ptrReg + ")  # *" + ptr + " = " + src + "\n");
+            }
+            return "# " + line + "\n";
+        }
+
+        // Load (e.g., x = *a)
+        // Load without explicit type (e.g., i5 = *b)
+std::regex loadSimpleRegex(R"((\w+)\s*=\s*\*(\w+))");
+if (std::regex_search(line, match, loadSimpleRegex)) {
+    std::string dest = match[1];
+    std::string ptr = match[2];
+    
+    output.push_back("    # LOAD OPERATION: " + dest + " = *" + ptr + "\n");
+    
+    // Infer type from the pointer variable
+    bool isFloat = isFloatVar(ptr);
+    
+    // Load the pointer value (address) into a register
+    std::string ptrReg = getRegisterForVar(ptr, false, true); // loadValue = true
+    
+    output.push_back("    # Pointer " + ptr + " contains address in register " + ptrReg + "\n");
+    
+    if (isFloat) {
+        std::string destReg = getRegisterForVar(dest, true, false); // loadValue = false
+        output.push_back("    l.s " + destReg + ", 0(" + ptrReg + ")  # " + dest + " = *" + ptr + " (float)\n");
+        markDirty(dest, destReg);
+    } else {
+        std::string destReg = getRegisterForVar(dest, false, false); // loadValue = false
+        output.push_back("    lw " + destReg + ", 0(" + ptrReg + ")  # " + dest + " = *" + ptr + " (int)\n");
+        markDirty(dest, destReg);
+    }
+    return "# " + line + "\n";
+}
+std::regex loadRegex(R"((\w+)\s*=\s*\*(\w+)\s*\[(\w+)\])");
+if (std::regex_search(line, match, loadRegex)) {
+    std::string dest = match[1];
+    std::string ptr = match[2];
+    std::string type = match[3];
+
+    output.push_back("    # LOAD OPERATION: " + dest + " = *" + ptr + " [" + type + "]\n");
+    
+    // *** FIX: Load the pointer value (address) into a register ***
+    std::string ptrReg = getRegisterForVar(ptr, false, true); // loadValue = true
+    
+    output.push_back("    # Pointer " + ptr + " contains address in register " + ptrReg + "\n");
+    
+    if (type == "FLOAT") {
+        std::string destReg = getRegisterForVar(dest, true, false); // loadValue = false
+        output.push_back("    l.s " + destReg + ", 0(" + ptrReg + ")  # " + dest + " = *" + ptr + " (float)\n");
+        markDirty(dest, destReg);
+    } else {
+        std::string destReg = getRegisterForVar(dest, false, false); // loadValue = false
+        output.push_back("    lw " + destReg + ", 0(" + ptrReg + ")  # " + dest + " = *" + ptr + " (int)\n");
+        markDirty(dest, destReg);
+    }
+    return "# " + line + "\n";
+}
         
-        // Handle array indexing (e.g., x[i] = y)
-        // t1 = i * 4
-        // t2 = x + t1
-        // *t2 = y
-        
-        return "# Unhandled TAC: " + line + "\n";
+        // Default: just copy the line as a comment
+        return "# UNHANDLED: " + line + "\n";
     }
 
     void convertIntOperation(const std::string& dest, const std::string& left, const std::string& op, const std::string& right) {
-        std::string destReg = getRegisterForVar(dest, false);
-        std::string leftReg;
-        std::string rightReg;
-        
-        // Check if left is a variable
-        if (isalpha(left[0])) {
-            leftReg = getRegisterForVar(left, false);
-        }
-        
-        // Check if right is a variable
-        if (isalpha(right[0])) {
-            rightReg = getRegisterForVar(right, false);
-        }
-        
-        std::string opCmd;
-        if (op == "+") opCmd = "add";
-        if (op == "-") opCmd = "sub";
-        if (op == "*") opCmd = "mul";
-        if (op == "/") opCmd = "div";
-        if (op == "&") opCmd = "and";
-        if (op == "|") opCmd = "or";
-        if (op == "^") opCmd = "xor";
-        if (op == "<<") opCmd = "sll";
-        if (op == ">>") opCmd = "srl";
-        
-        if (rightReg.empty()) {
-            // Right is a literal
-            if (op == "+") opCmd = "addiu";
-            if (op == "-") opCmd = "subu";
-            if (op == "&") opCmd = "andi";
-            if (op == "|") opCmd = "ori";
-            if (op == "^") opCmd = "xori";
-            if (op == "<<") opCmd = "sll";
-            if (op == ">>") opCmd = "srl";
-            
-            if (op == "*" || op == "/") {
-                // Must load literal into a temp register
-                rightReg = getRegisterForVar("t" + std::to_string(tempVarCount++), false);
-                output.push_back("    li " + rightReg + ", " + right + "\n");
-                output.push_back("    " + opCmd + " " + destReg + ", " + leftReg + ", " + rightReg + "\n");
-            } else {
-                 // Use immediate instruction
-                output.push_back("    " + opCmd + " " + destReg + ", " + leftReg + ", " + right + "\n");
-            }
-        } else if (leftReg.empty()) {
-             // Left is a literal
-            leftReg = getRegisterForVar("t" + std::to_string(tempVarCount++), false);
-            output.push_back("    li " + leftReg + ", " + left + "\n");
-            output.push_back("    " + opCmd + " " + destReg + ", " + leftReg + ", " + rightReg + "\n");
-        } else {
-            // Both are registers
-            output.push_back("    " + opCmd + " " + destReg + ", " + leftReg + ", " + rightReg + "\n");
-        }
-        
-        if (op == "/" || op == "%") {
-            // SPIM stores quotient in $lo, remainder in $hi
-            // This is a simplification; a full solution would use mflo/mfhi
-            output.push_back("    mflo " + destReg + " # Move quotient to " + destReg + "\n");
-        }
-        
-        markDirty(dest, destReg);
-        output.push_back("    move " + destReg + ", " + destReg + " # " + dest + " = (int_op)\n");
+    bool isFloat = false;
+    std::string destReg = getRegisterForVar(dest, isFloat, false);
+    std::string leftReg = getRegisterForVar(left, isFloat, true);
+    
+    std::string rightReg;
+    bool rightIsLiteral = std::regex_match(right, std::regex(R"(-?\d+)"));
+
+    std::string opCode;
+    if (op == "+") opCode = rightIsLiteral ? "addiu" : "addu";
+    else if (op == "-") opCode = rightIsLiteral ? "addiu" : "subu"; // addiu dest, src, -literal
+    else if (op == "*") opCode = "mul";
+    else if (op == "/") opCode = "div";
+    else if (op == "&") opCode = rightIsLiteral ? "andi" : "and";
+    else if (op == "|") opCode = rightIsLiteral ? "ori" : "or";
+    else if (op == "^") opCode = rightIsLiteral ? "xori" : "xor";
+    else if (op == "<<") opCode = rightIsLiteral ? "sll" : "sllv";
+    else if (op == ">>") opCode = rightIsLiteral ? "srl" : "srlv";
+    else {
+        output.push_back("    # ERROR: Unsupported int operation: " + op + "\n");
+        return;
     }
+    
+    if (rightIsLiteral) {
+        std::string rightVal = right;
+        if (op == "-") {
+            // MIPS doesn't have 'subi', so we use 'addi' with a negated literal
+            try {
+                rightVal = std::to_string(-std::stoi(right));
+            } catch (...) { rightVal = "0"; }
+            opCode = "addiu"; 
+        }
+        
+        if (opCode == "sll" || opCode == "srl") {
+            output.push_back("    " + opCode + " " + destReg + ", " + leftReg + ", " + rightVal + " # " + dest + " = " + left + " " + op + " " + right + "\n");
+        } else {
+            output.push_back("    " + opCode + " " + destReg + ", " + leftReg + ", " + rightVal + " # " + dest + " = " + left + " " + op + " " + right + "\n");
+        }
+    } 
+    else {
+        rightReg = getRegisterForVar(right, isFloat, true);
+        if (op == "*") {
+            // FIXED: Use 3-operand mul instruction
+            output.push_back("    mul " + destReg + ", " + leftReg + ", " + rightReg + " # " + dest + " = " + left + " * " + right + "\n");
+        } else if (op == "/") {
+            // FIXED: Correct division syntax
+            output.push_back("    div " + leftReg + ", " + rightReg + " # " + dest + " = " + left + " / " + right + "\n");
+            output.push_back("    mflo " + destReg + "\n");
+        } else if (op == "sllv" || op == "srlv") {
+            // FIXED: Shift variable operations
+            output.push_back("    " + opCode + " " + destReg + ", " + leftReg + ", " + rightReg + " # " + dest + " = " + left + " " + op + " " + right + "\n");
+        } else {
+            output.push_back("    " + opCode + " " + destReg + ", " + leftReg + ", " + rightReg + " # " + dest + " = " + left + " " + op + " " + right + "\n");
+        }
+    }
+    markDirty(dest, destReg);
+}
 
     void convertFloatOperation(const std::string& dest, const std::string& left, const std::string& op, const std::string& right) {
-        std::string destReg = getRegisterForVar(dest, true);
-        std::string leftReg;
+        bool isFloat = true;
+        // *** OPTIMIZATION: Get dest reg (loadValue=false) ***
+        std::string destReg = getRegisterForVar(dest, isFloat, false);
+        // *** OPTIMIZATION: Get left reg (loadValue=true) ***
+        std::string leftReg = getRegisterForVar(left, isFloat, true);
+        
         std::string rightReg;
         
-        // Check if left is a variable
-        if (isalpha(left[0])) {
-            leftReg = getRegisterForVar(left, true);
-        } else {
-            // Left is a literal
-            leftReg = getRegisterForVar("f" + std::to_string(tempVarCount++), true);
-            if (left.find('.') != std::string::npos) {
-                // Float literal
-                output.push_back("    l.s " + leftReg + ", " + getFloatConstant(left) + "\n");
-            } else {
-                // Int literal
-                output.push_back("    li $v1, " + left + "\n");
-                output.push_back("    mtc1 $v1, " + leftReg + "\n");
-                output.push_back("    cvt.s.w " + leftReg + ", " + leftReg + "\n");
-            }
+        if (std::regex_match(right, std::regex(R"(-?\d+\.\d+)"))) {
+            std::string floatLabel = getFloatConstant(right);
+            rightReg = "$f31"; // Use reserved temp
+            output.push_back("    l.s " + rightReg + ", " + floatLabel + " # Load literal " + right + "\n");
+        } 
+        else if (std::regex_match(right, std::regex(R"(-?\d+)"))) {
+             rightReg = "$f31";
+             std::string tempIntReg = "$v1";
+             output.push_back("    li " + tempIntReg + ", " + right + "\n");
+             output.push_back("    mtc1 " + tempIntReg + ", " + rightReg + "\n");
+             output.push_back("    cvt.s.w " + rightReg + ", " + rightReg + " # Convert literal " + right + " to float\n");
         }
-        
-        // Check if right is a variable
-        if (isalpha(right[0])) {
-            rightReg = getRegisterForVar(right, true);
-        } else {
-            // Right is a literal
-            rightReg = getRegisterForVar("f" + std::to_string(tempVarCount++), true);
-            if (right.find('.') != std::string::npos) {
-                // Float literal
-                output.push_back("    l.s " + rightReg + ", " + getFloatConstant(right) + "\n");
-            } else {
-                // Int literal
-                output.push_back("    li $v1, " + right + "\n");
-                output.push_back("    mtc1 $v1, " + rightReg + "\n");
-                output.push_back("    cvt.s.w " + rightReg + ", " + rightReg + "\n");
-            }
+        else {
+            // *** OPTIMIZATION: Get right reg (loadValue=true) ***
+            rightReg = getRegisterForVar(right, isFloat, true);
         }
-        
-        std::string opCmd;
-        if (op == "+") opCmd = "add.s";
-        if (op == "-") opCmd = "sub.s";
-        if (op == "*") opCmd = "mul.s";
-        if (op == "/") opCmd = "div.s";
-        
-        output.push_back("    " + opCmd + " " + destReg + ", " + leftReg + ", " + rightReg + "\n");
-        
+
+        std::string opCode;
+        if (op == "+") opCode = "add.s";
+        else if (op == "-") opCode = "sub.s";
+        else if (op == "*") opCode = "mul.s";
+        else if (op == "/") opCode = "div.s";
+        else {
+            output.push_back("    # ERROR: Unsupported float operation: " + op + "\n");
+            return;
+        }
+
+        output.push_back("    " + opCode + " " + destReg + ", " + leftReg + ", " + rightReg + " # " + dest + " = " + left + " " + op + " " + right + "\n");
         markDirty(dest, destReg);
-        output.push_back("    mov.s " + destReg + ", " + destReg + " # " + dest + " = (float_op)\n");
     }
 
     void convertIntComparison(const std::string& dest, const std::string& left, const std::string& op, const std::string& right) {
-        std::string destReg = getRegisterForVar(dest, false);
-        std::string leftReg;
-        std::string rightReg;
-
-        // Check if left is a variable
-        if (isalpha(left[0])) {
-            leftReg = getRegisterForVar(left, false);
+    std::string destReg = getRegisterForVar(dest, false, false);
+    std::string leftReg = getRegisterForVar(left, false, true);
+    
+    if (std::regex_match(right, std::regex(R"(-?\d+)"))) {
+        // Handle literal comparisons
+        if (op == "<") {
+            output.push_back("    slti " + destReg + ", " + leftReg + ", " + right + " # " + dest + " = " + left + " < " + right + "\n");
+        } else if (op == "<=") {
+            // slti + equality check
+            std::string tempReg = (leftReg == "$t0") ? "$t1" : "$t0";
+            output.push_back("    slti " + destReg + ", " + leftReg + ", " + std::to_string(std::stoi(right) + 1) + " # " + dest + " = " + left + " <= " + right + "\n");
+        } else if (op == ">") {
+            // Use slt with swapped operands
+            std::string tempReg = "$v1";
+            output.push_back("    li " + tempReg + ", " + right + "\n");
+            output.push_back("    slt " + destReg + ", " + tempReg + ", " + leftReg + " # " + dest + " = " + left + " > " + right + "\n");
+        } else if (op == ">=") {
+            // slt + invert
+            std::string tempReg = "$v1";
+            output.push_back("    li " + tempReg + ", " + right + "\n");
+            output.push_back("    slt " + destReg + ", " + leftReg + ", " + tempReg + " # " + dest + " = " + left + " < " + right + "\n");
+            output.push_back("    xori " + destReg + ", " + destReg + ", 1 # Invert to get >= " + right + "\n");
+        } else if (op == "==") {
+            std::string tempReg = "$v1";
+            output.push_back("    li " + tempReg + ", " + right + "\n");
+            output.push_back("    xor " + destReg + ", " + leftReg + ", " + tempReg + " # " + dest + " = " + left + " == " + right + "\n");
+            output.push_back("    sltiu " + destReg + ", " + destReg + ", 1 # Set to 1 if equal\n");
+        } else if (op == "!=") {
+            std::string tempReg = "$v1";
+            output.push_back("    li " + tempReg + ", " + right + "\n");
+            output.push_back("    xor " + destReg + ", " + leftReg + ", " + tempReg + " # " + dest + " = " + left + " != " + right + "\n");
+            output.push_back("    sltu " + destReg + ", $zero, " + destReg + " # Set to 1 if not equal\n");
         }
-        
-        // Check if right is a variable
-        if (isalpha(right[0])) {
-            rightReg = getRegisterForVar(right, false);
+    } else {
+        // Handle variable comparisons
+        std::string rightReg = getRegisterForVar(right, false, true);
+        if (op == "<") {
+            output.push_back("    slt " + destReg + ", " + leftReg + ", " + rightReg + " # " + dest + " = " + left + " < " + right + "\n");
+        } else if (op == "<=") {
+            // slt + equality check
+            output.push_back("    slt " + destReg + ", " + rightReg + ", " + leftReg + " # " + dest + " = " + right + " < " + left + "\n");
+            output.push_back("    xori " + destReg + ", " + destReg + ", 1 # Invert to get " + left + " <= " + right + "\n");
+        } else if (op == ">") {
+            output.push_back("    slt " + destReg + ", " + rightReg + ", " + leftReg + " # " + dest + " = " + left + " > " + right + "\n");
+        } else if (op == ">=") {
+            output.push_back("    slt " + destReg + ", " + leftReg + ", " + rightReg + " # " + dest + " = " + left + " < " + right + "\n");
+            output.push_back("    xori " + destReg + ", " + destReg + ", 1 # Invert to get " + left + " >= " + right + "\n");
+        } else if (op == "==") {
+            output.push_back("    xor " + destReg + ", " + leftReg + ", " + rightReg + " # " + dest + " = " + left + " == " + right + "\n");
+            output.push_back("    sltiu " + destReg + ", " + destReg + ", 1 # Set to 1 if equal\n");
+        } else if (op == "!=") {
+            output.push_back("    xor " + destReg + ", " + leftReg + ", " + rightReg + " # " + dest + " = " + left + " != " + right + "\n");
+            output.push_back("    sltu " + destReg + ", $zero, " + destReg + " # Set to 1 if not equal\n");
         }
-        
-        std::string opCmd;
-        if (op == "<") opCmd = "slt";
-        if (op == "<=") opCmd = "sle";
-        if (op == ">") opCmd = "sgt";
-        if (op == ">=") opCmd = "sge";
-        if (op == "==") opCmd = "seq";
-        if (op == "!=") opCmd = "sne";
-        
-        if (rightReg.empty()) {
-            // Right is a literal
-            if (op == "<") opCmd = "slti";
-            
-            if (opCmd == "slti") {
-                output.push_back("    " + opCmd + " " + destReg + ", " + leftReg + ", " + right + "\n");
-            } else {
-                // Must load literal into a temp register
-                rightReg = getRegisterForVar("t" + std::to_string(tempVarCount++), false);
-                output.push_back("    li " + rightReg + ", " + right + "\n");
-                output.push_back("    " + opCmd + " " + destReg + ", " + leftReg + ", " + rightReg + "\n");
-            }
-        } else if (leftReg.empty()) {
-             // Left is a literal
-            leftReg = getRegisterForVar("t" + std::to_string(tempVarCount++), false);
-            output.push_back("    li " + leftReg + ", " + left + "\n");
-            output.push_back("    " + opCmd + " " + destReg + ", " + leftReg + ", " + rightReg + "\n");
-        } else {
-            // Both are registers
-            output.push_back("    " + opCmd + " " + destReg + ", " + leftReg + ", " + rightReg + "\n");
-        }
-        
-        markDirty(dest, destReg);
     }
+    markDirty(dest, destReg);
+}
     
     void convertFloatComparison(const std::string& dest, const std::string& left, const std::string& op, const std::string& right) {
-        std::string destReg = getRegisterForVar(dest, false); // Result is 0 or 1 (int)
-        std::string leftReg;
+        // *** OPTIMIZATION: Get regs (operands=load, dest=no load) ***
+        std::string leftReg = getRegisterForVar(left, true, true);
         std::string rightReg;
-
-        // Load left operand (literal or var)
-        if (isalpha(left[0])) {
-            leftReg = getRegisterForVar(left, true);
-        } else {
-            leftReg = getRegisterForVar("f" + std::to_string(tempVarCount++), true);
-            if (left.find('.') != std::string::npos) {
-                output.push_back("    l.s " + leftReg + ", " + getFloatConstant(left) + "\n");
-            } else {
-                output.push_back("    li $v1, " + left + "\n");
-                output.push_back("    mtc1 $v1, " + leftReg + "\n");
-                output.push_back("    cvt.s.w " + leftReg + ", " + leftReg + "\n");
-            }
-        }
-
-        // Load right operand (literal or var)
-        if (isalpha(right[0])) {
-            rightReg = getRegisterForVar(right, true);
-        } else {
-            rightReg = getRegisterForVar("f" + std::to_string(tempVarCount++), true);
-            if (right.find('.') != std::string::npos) {
-                output.push_back("    l.s " + rightReg + ", " + getFloatConstant(right) + "\n");
-            } else {
-                output.push_back("    li $v1, " + right + "\n");
-                output.push_back("    mtc1 $v1, " + rightReg + "\n");
-                output.push_back("    cvt.s.w " + rightReg + ", " + rightReg + "\n");
-            }
-        }
-
-        // c.lt.s, c.le.s, c.eq.s
-        std::string opCmd;
-        std::string trueLabel = generateLabel("float_true");
-        std::string endLabel = generateLabel("float_cmp_end");
-
-        if (op == "<") opCmd = "c.lt.s";
-        if (op == "<=") opCmd = "c.le.s";
-        if (op == "==") opCmd = "c.eq.s";
         
-        if (!opCmd.empty()) {
-            output.push_back("    " + opCmd + " " + leftReg + ", " + rightReg + "\n");
-            output.push_back("    li " + destReg + ", 0          # Assume false\n");
-            output.push_back("    bc1t " + trueLabel + "       # Branch if true\n");
+        if (std::regex_match(right, std::regex(R"(-?\d+\.\d+)"))) {
+            std::string floatLabel = getFloatConstant(right);
+            rightReg = "$f31"; // Use reserved temp
+            output.push_back("    l.s " + rightReg + ", " + floatLabel + " # Load literal " + right + "\n");
+        } else {
+            rightReg = getRegisterForVar(right, true, true);
+        }
+
+        std::string destReg = getRegisterForVar(dest, false, false);
+        std::string trueLabel = generateLabel("float_true_");
+        std::string endLabel = generateLabel("float_end_");
+
+        std::string opCode;
+        if (op == "==") opCode = "c.eq.s";
+        else if (op == "<") opCode = "c.lt.s";
+        else if (op == "<=") opCode = "c.le.s";
+        else if (op == "!=") opCode = "c.eq.s"; // Inverted logic
+        else if (op == ">") opCode = "c.lt.s"; // Swapped operands
+        else if (op == ">=") opCode = "c.le.s"; // Swapped operands
+        else {
+            output.push_back("    # ERROR: Unsupported float comparison: " + op + "\n");
+            return;
+        }
+
+        if (op == ">" || op == ">=") {
+            output.push_back("    " + opCode + " " + rightReg + ", " + leftReg + " # " + right + " " + (op == ">" ? "<" : "<=") + " " + left + "\n");
+        } else {
+            output.push_back("    " + opCode + " " + leftReg + ", " + rightReg + " # " + left + " " + op + " " + right + "\n");
+        }
+        
+        output.push_back("    li " + destReg + ", 0 # Assume false\n");
+        
+        if (op == "!=") {
+            output.push_back("    bc1f " + endLabel + " # Branch if false (not equal)\n");
+        } else {
+            output.push_back("    bc1t " + trueLabel + " # Branch if true\n");
             output.push_back("    j " + endLabel + "\n");
             output.push_back(trueLabel + ":\n");
-            output.push_back("    li " + destReg + ", 1          # Set true\n");
+            output.push_back("    li " + destReg + ", 1 # Set true\n");
             output.push_back(endLabel + ":\n");
-        } else if (op == ">") {
-            // Implemented as !(left <= right)
-            output.push_back("    c.le.s " + leftReg + ", " + rightReg + "\n"); // op is <=
-            output.push_back("    li " + destReg + ", 1          # Assume true\n");
-            output.push_back("    bc1t " + trueLabel + "       # Branch if true (<=)\n");
-            output.push_back("    j " + endLabel + "\n");
-            output.push_back(trueLabel + ":\n");
-            output.push_back("    li " + destReg + ", 0          # Set false\n");
-            output.push_back(endLabel + ":\n");
-        } else if (op == ">=") {
-             // Implemented as !(left < right)
-            output.push_back("    c.lt.s " + leftReg + ", " + rightReg + "\n"); // op is <
-            output.push_back("    li " + destReg + ", 1          # Assume true\n");
-            output.push_back("    bc1t " + trueLabel + "       # Branch if true (<)\n");
-            output.push_back("    j " + endLabel + "\n");
-            output.push_back(trueLabel + ":\n");
-            output.push_back("    li " + destReg + ", 0          # Set false\n");
-            output.push_back(endLabel + ":\n");
-        } else if (op == "!=") {
-            output.push_back("    c.eq.s " + leftReg + ", " + rightReg + "\n"); // op is ==
-            output.push_back("    li " + destReg + ", 1          # Assume true\n");
-            output.push_back("    bc1t " + trueLabel + "       # Branch if true (==)\n");
-            output.push_back("    j " + endLabel + "\n");
-            output.push_back(trueLabel + ":\n");
-            output.push_back("    li " + destReg + ", 0          # Set false\n");
-            output.push_back(endLabel + ":\n");
+        }
+        
+        if (op == "!=") {
+             output.push_back(endLabel + ":\n");
+             output.push_back("    li " + destReg + ", 1 # Set true\n");
         }
 
         markDirty(dest, destReg);
     }
 
     void convertFunctionCall(const std::string& funcName, int numArgs, const std::string& resultVar) {
+    
+    spillAllDirtyRegisters();
+    if (funcName == "printf") {
+        convertPrintfCall(numArgs);
+    } else if (funcName == "scanf") {
+        convertScanfCall(numArgs);
+    } else if (funcName == "malloc") {
+        convertMallocCall(numArgs, resultVar);
+    } else if (funcName == "free") {
+        convertFreeCall(numArgs);
+    } 
+    else {
+        // For user-defined functions, save critical registers
+        output.push_back("    # Saving critical registers before call to " + funcName + "\n");
         
-        spillAllDirtyRegisters();
-        if (funcName == "printf") {
-            convertPrintfCall(numArgs);
-        } else if (funcName == "scanf") {
-            convertScanfCall(numArgs);
-        } else if (funcName == "malloc") {
-            convertMallocCall(numArgs, resultVar);
-        } else if (funcName == "free") {
-            convertFreeCall(numArgs);
-        } 
-        else {
-        output.push_back("    # Saving caller-saved registers before call\n");
-        std::set<std::string> varsToSave;
-        for(auto& pair : variableInfo) {
-            std::string var = pair.first;
-            // Only save if it's a real variable (not temp) and in a register
-            if (var[0] != 't' && var[0] != 'i' && !pair.second.registers.empty()) {
-                // Check if it's in a $t register
-                for(const std::string& reg : pair.second.registers) {
-                    if (intRegisters.count(reg) || floatRegisters.count(reg)) {
-                        varsToSave.insert(var);
-                        break;
-                    }
-                }
+        // Save important temporary registers that might be clobbered
+        std::vector<std::string> regsToSave;
+        for (const auto& reg : availableIntRegs) {
+            if (!intRegisters[reg].varNames.empty()) {
+                output.push_back("    addiu $sp, $sp, -4\n");
+                output.push_back("    sw " + reg + ", 0($sp)\n");
+                regsToSave.push_back(reg);
             }
         }
         
-        for(const std::string& var : varsToSave) {
-            // Force allocation if not already on stack
-            allocateStackSpace(var);
-            std::string reg = *variableInfo[var].registers.begin(); // Get *any* reg it's in
-            output.push_back("    # Saving " + var + " from " + reg + " before call\n");
-            if(variableInfo[var].isFloat) {
-                output.push_back("    s.s " + reg + ", " + std::to_string(variableInfo[var].stackOffset) + "($fp)\n");
-            } else {
-                output.push_back("    sw " + reg + ", " + std::to_string(variableInfo[var].stackOffset) + "($fp)\n");
+        // Also save argument registers if they contain important values
+        for (const auto& reg : argIntRegs) {
+            if (!intRegisters[reg].varNames.empty()) {
+                output.push_back("    addiu $sp, $sp, -4\n");
+                output.push_back("    sw " + reg + ", 0($sp)\n");
+                regsToSave.push_back(reg);
             }
         }
-        // ***************************************************************
 
         // Handle arguments (from paramStack)
         if (numArgs > 0) {
@@ -1405,22 +1346,9 @@ public:
 
             // Allocate stack space for arguments 5+
             if (numArgs > 4) {
-                 int extraArgs = 0;
-                 // We need to count how many args *actually* go on the stack
-                 int tempInt = 0, tempFloat = 0;
-                 for (int i = 0; i < numArgs; ++i) {
-                     std::string arg = paramStack[paramStack.size() - numArgs + i];
-                     bool isFloat = isFloatVar(arg);
-                     if (isFloat && tempFloat < argFloatRegs.size()) tempFloat++;
-                     else if (!isFloat && tempInt < argIntRegs.size()) tempInt++;
-                     else extraArgs++;
-                 }
-                 
-                 if (extraArgs > 0) {
-                     argStackOffset = (extraArgs + 1) & ~1; // Align to 8-byte
-                     argStackOffset *= -4;
-                     output.push_back("    addiu $sp, $sp, " + std::to_string(argStackOffset) + " # Make space for " + std::to_string(extraArgs) + " stack arguments\n");
-                 }
+                int extraArgs = numArgs - 4;
+                argStackOffset = -(extraArgs * 4);
+                output.push_back("    addiu $sp, $sp, " + std::to_string(argStackOffset) + " # Make space for " + std::to_string(extraArgs) + " extra arguments\n");
             }
 
             for (int i = 0; i < numArgs; ++i) {
@@ -1428,7 +1356,7 @@ public:
                 paramStack.pop_back();
                 
                 bool isFloat = isFloatVar(arg);
-                std::string argReg = getRegisterForVar(arg, isFloat);
+                std::string argReg = getRegisterForVar(arg, isFloat, true);
 
                 if (isFloat && floatArgCount < argFloatRegs.size()) {
                     output.push_back("    mov.s " + argFloatRegs[floatArgCount++] + ", " + argReg + "  # Float argument " + std::to_string(i+1) + "\n");
@@ -1436,10 +1364,12 @@ public:
                     output.push_back("    move " + argIntRegs[intArgCount++] + ", " + argReg + "  # Integer argument " + std::to_string(i+1) + "\n");
                 } else {
                     // Argument goes on the stack
+                    int stackOffset = stackArgCount * 4;
+                    output.push_back("    # Argument " + std::to_string(i+1) + " on stack at offset " + std::to_string(stackOffset) + "\n");
                     if (isFloat) {
-                        output.push_back("    s.s " + argReg + ", " + std::to_string(stackArgCount * 4) + "($sp)  # Stack argument " + std::to_string(i+1) + "\n");
+                        output.push_back("    s.s " + argReg + ", " + std::to_string(stackOffset) + "($sp)\n");
                     } else {
-                        output.push_back("    sw " + argReg + ", " + std::to_string(stackArgCount * 4) + "($sp)  # Stack argument " + std::to_string(i+1) + "\n");
+                        output.push_back("    sw " + argReg + ", " + std::to_string(stackOffset) + "($sp)\n");
                     }
                     stackArgCount++;
                 }
@@ -1454,223 +1384,215 @@ public:
             argStackOffset = 0;
         }
 
+        // Restore saved registers
+        for (int i = regsToSave.size() - 1; i >= 0; i--) {
+            output.push_back("    lw " + regsToSave[i] + ", 0($sp)\n");
+            output.push_back("    addiu $sp, $sp, 4\n");
+        }
+
         // *** FIX 2: Invalidate all $t registers ***
         // After a call, we cannot trust *any* $t registers
         invalidateTempRegisters();
         
-        // *** FIX: Restore caller-saved registers ***
-        output.push_back("    # Restoring caller-saved registers after call\n");
-        for(const std::string& var : varsToSave) {
-            // The variable's *only* copy was on the stack.
-            // We must load it back into a register.
-            // getRegisterForVar will handle this automatically
-            // by loading from its stack offset.
-            
-            // We just need to ensure it *has* a stack offset
-            if (variableInfo[var].stackOffset == -1) {
-                 output.push_back("    # CRITICAL ERROR: " + var + " had no stack offset!\n");
-            } else {
-                 // By calling getRegister, we ensure it's loaded back from stack
-                 // output.push_back("    # Restoring " + var + " after call\n");
-                 // std::string reg = getRegisterForVar(var, variableInfo[var].isFloat);
-                 
-                 // *** NEWER FIX: Don't load it yet. Just ensure its reg is clear ***
-                 // The next time it's *used*, getRegisterForVar will load it
-                 // from the stack. This is more efficient.
-                 variableInfo[var].registers.clear();
-            }
-        }
-        
         // Store return value
         if (!resultVar.empty()) {
             bool isFloat = isFloatVar(resultVar);
-            std::string destReg = getRegisterForVar(resultVar, isFloat);
+            std::string destReg = getRegisterForVar(resultVar, isFloat, false); // Don't load old value
             
             if (isFloat) {
-                output.push_back("    mov.s " + destReg + ", $v0  # Store float return value\n");
+                output.push_back("    mov.s " + destReg + ", $f0  # Store float return value\n");
             } else {
                 output.push_back("    move " + destReg + ", $v0  # Store return value\n");
             }
             markDirty(resultVar, destReg);
         }
     }
-    }
+}
 
      void convertPrintfCall(int numArgs) {
-        output.push_back("    # printf call\n");
+    output.push_back("    # printf call\n");
 
-        if (numArgs < 1 || paramStack.empty()) {
-            output.push_back("    # ERROR: Not enough args for printf\n");
-            return;
-        }
+    if (numArgs < 1 || paramStack.empty()) {
+        output.push_back("    # ERROR: Not enough args for printf\n");
+        return;
+    }
 
-        // 1. Get the format string variable (e.g., "i0")
-        std::string formatStrVar = paramStack.back();
-        std::string actualFormatString;
+    // 1. Get the format string variable (e.g., "i9")
+    std::string formatStrVar = paramStack.back();
+    std::string actualFormatString;
 
-        // 2. Look up its literal value (e.g., "\"%d hello\"")
-        if (globalInitialValues.count(formatStrVar)) {
-            actualFormatString = globalInitialValues[formatStrVar];
-        } else {
-            output.push_back("    # ERROR: Could not find format string for " + formatStrVar + "\n");
-            return;
-        }
+    // 2. Look up its literal value (e.g., "\"%d\"")
+    if (globalInitialValues.count(formatStrVar)) {
+        actualFormatString = globalInitialValues[formatStrVar];
+    } else {
+        output.push_back("    # ERROR: Could not find format string for " + formatStrVar + "\n");
+        return;
+    }
 
-        // 3. Clean the quotes (e.g., "%d hello")
-        if (!actualFormatString.empty() && actualFormatString.front() == '"' && actualFormatString.back() == '"') {
-            actualFormatString = actualFormatString.substr(1, actualFormatString.length() - 2);
-        }
+    // 3. Clean the quotes (e.g., "%d")
+    if (!actualFormatString.empty() && actualFormatString.front() == '"' && actualFormatString.back() == '"') {
+        actualFormatString = actualFormatString.substr(1, actualFormatString.length() - 2);
+    }
 
-        // 4. Loop through the format string and print chunks/variables
-        // Start at the first argument (index numArgs-2) and go backwards
-        int varParamIndex = numArgs - 2; 
-        
-        int lastIndex = 0;     // Tracks the start of a literal string chunk
+    // 4. Loop through the format string and print chunks/variables
+    int varParamIndex = numArgs - 2; 
+    
+    int lastIndex = 0;
 
-        for (int i = 0; i < actualFormatString.length(); ++i) {
-            if (actualFormatString[i] == '%') {
-                // A) Print any literal chunk that came before this '%'
-                if (i > lastIndex) {
-                    std::string chunk = actualFormatString.substr(lastIndex, i - lastIndex);
-                    // Use getStringConstant. It correctly handles unquoted chunks.
-                    std::string label = getStringConstant(chunk);
-                    output.push_back("    li $v0, 4           # Print string chunk\n");
-                    output.push_back("    la $a0, " + label + "\n");
+    for (int i = 0; i < actualFormatString.length(); ++i) {
+        if (actualFormatString[i] == '%') {
+            // A) Print any literal chunk that came before this '%'
+            if (i > lastIndex) {
+                std::string chunk = actualFormatString.substr(lastIndex, i - lastIndex);
+                std::string label = getStringConstant(chunk);
+                output.push_back("    li $v0, 4           # Print string chunk\n");
+                output.push_back("    la $a0, " + label + "\n");
+                output.push_back("    syscall\n");
+            }
+
+            // B) Process the format specifier
+            if (i + 1 < actualFormatString.length()) {
+                char specifier = actualFormatString[i+1];
+                std::string varName;
+
+                // Check if we've run out of arguments
+                if (specifier != '%' && varParamIndex < 0) {
+                    output.push_back("    # ERROR: More format specifiers than variables\n");
+                    break;
+                } else if (specifier != '%') {
+                    varName = paramStack[varParamIndex];
+                }
+
+                if (specifier == 'd') {
+                    // *** FIX: Get the VALUE of the variable, not its address ***
+                    std::string varReg = getRegisterForVar(varName, false, true); // loadValue = true
+                    output.push_back("    li $v0, 1           # Print integer\n");
+                    output.push_back("    move $a0, " + varReg + "\n");
+                    output.push_back("    syscall\n");
+                    varParamIndex--;
+                } else if (specifier == 'f') {
+                    std::string varReg = getRegisterForVar(varName, true, true); // loadValue = true
+                    output.push_back("    li $v0, 2           # Print float\n");
+                    output.push_back("    mov.s $f12, " + varReg + "\n");
+                    output.push_back("    syscall\n");
+                    varParamIndex--;
+                } else if (specifier == 's') {
+                    std::string varReg = getRegisterForVar(varName, false, true); // String address
+                    output.push_back("    li $v0, 4           # Print string\n");
+                    output.push_back("    move $a0, " + varReg + "\n");
+                    output.push_back("    syscall\n");
+                    varParamIndex--;
+                } else if (specifier == 'c') {
+                    std::string varReg = getRegisterForVar(varName, false, true); // Char value
+                    output.push_back("    li $v0, 11          # Print char\n");
+                    output.push_back("    move $a0, " + varReg + "\n");
+                    output.push_back("    syscall\n");
+                    varParamIndex--;
+                } else if (specifier == '%') {
+                    output.push_back("    li $v0, 11          # Print char\n");
+                    output.push_back("    li $a0, 37          # '%' character\n");
                     output.push_back("    syscall\n");
                 }
-
-                // B) Process the format specifier
-                if (i + 1 < actualFormatString.length()) {
-                    char specifier = actualFormatString[i+1];
-                    std::string varName;
-                    std::string varReg;
-
-                    // Check if we've run out of arguments (index < 0)
-                    if (specifier != '%' && varParamIndex < 0) {
-                         output.push_back("    # ERROR: More format specifiers than variables\n");
-                         break; // Stop processing
-                    } else if (specifier != '%') {
-                         varName = paramStack[varParamIndex];
-                    }
-
-                    if (specifier == 'd') {
-                        varReg = getRegisterForVar(varName, false);
-                        output.push_back("    li $v0, 1           # Print integer\n");
-                        output.push_back("    move $a0, " + varReg + "\n");
-                        output.push_back("    syscall\n");
-                        varParamIndex--;
-                    } else if (specifier == 'f') {
-                        varReg = getRegisterForVar(varName, true);
-                        output.push_back("    li $v0, 2           # Print float\n");
-                        output.push_back("    mov.s $f12, " + varReg + "\n");
-                        output.push_back("    syscall\n");
-                        varParamIndex--;
-                    } else if (specifier == 's') {
-                        varReg = getRegisterForVar(varName, false); // String address
-                        output.push_back("    li $v0, 4           # Print string\n");
-                        output.push_back("    move $a0, " + varReg + "\n");
-                        output.push_back("    syscall\n");
-                        varParamIndex--;
-                    } else if (specifier == 'c') {
-                        varReg = getRegisterForVar(varName, false); // Char value
-                        output.push_back("    li $v0, 11          # Print char\n");
-                        output.push_back("    move $a0, " + varReg + "\n");
-                        output.push_back("    syscall\n");
-                        varParamIndex--;
-                    } else if (specifier == '%') {
-                        output.push_back("    li $v0, 11          # Print char\n");
-                        output.push_back("    li $a0, 37          # '%' character\n");
-                        output.push_back("    syscall\n");
-                    }
-                    
-                    i++; // Skip the specifier character
-                    lastIndex = i + 1; // Update start of next chunk
-                }
+                
+                i++; // Skip the specifier character
+                lastIndex = i + 1; // Update start of next chunk
             }
         }
-
-        // 5. Print any remaining literal chunk after the last specifier
-        if (lastIndex < actualFormatString.length()) {
-            std::string chunk = actualFormatString.substr(lastIndex);
-            std::string label = getStringConstant(chunk);
-            output.push_back("    li $v0, 4           # Print final string chunk\n");
-            output.push_back("    la $a0, " + label + "\n");
-            output.push_back("    syscall\n");
-        }
     }
+
+    // 5. Print any remaining literal chunk after the last specifier
+    if (lastIndex < actualFormatString.length()) {
+        std::string chunk = actualFormatString.substr(lastIndex);
+        std::string label = getStringConstant(chunk);
+        output.push_back("    li $v0, 4           # Print final string chunk\n");
+        output.push_back("    la $a0, " + label + "\n");
+        output.push_back("    syscall\n");
+    }
+}
 
     void convertScanfCall(int numArgs) {
-        output.push_back("    # scanf call\n");
-        
-        if (numArgs < 2 || paramStack.empty()) {
-            output.push_back("    # ERROR: Not enough args for scanf\n");
-            return;
-        }
+    output.push_back("    # scanf call\n");
+    
+    if (numArgs < 2 || paramStack.empty()) {
+        output.push_back("    # ERROR: Not enough args for scanf\n");
+        return;
+    }
 
-        // 1. Get the format string variable (e.g., "i6")
-        std::string formatStrVar = paramStack.back();
-        std::string actualFormatString;
+    // 1. Get the format string variable (e.g., "i6")
+    std::string formatStrVar = paramStack.back();
+    std::string actualFormatString;
 
-        // 2. Look up its literal value (e.g., "\"%d,%d\"")
-        if (globalInitialValues.count(formatStrVar)) {
-            actualFormatString = globalInitialValues[formatStrVar];
-        } else {
-            output.push_back("    # ERROR: Could not find format string for " + formatStrVar + "\n");
-            return;
-        }
+    // 2. Look up its literal value (e.g., "\"%d,%d\"")
+    if (globalInitialValues.count(formatStrVar)) {
+        actualFormatString = globalInitialValues[formatStrVar];
+    } else {
+        output.push_back("    # ERROR: Could not find format string for " + formatStrVar + "\n");
+        return;
+    }
 
-        // 3. Clean the quotes (e.g., "%d,%d")
-        if (!actualFormatString.empty() && actualFormatString.front() == '"' && actualFormatString.back() == '"') {
-            actualFormatString = actualFormatString.substr(1, actualFormatString.length() - 2);
-        }
+    // 3. Clean the quotes (e.g., "%d,%d")
+    if (!actualFormatString.empty() && actualFormatString.front() == '"' && actualFormatString.back() == '"') {
+        actualFormatString = actualFormatString.substr(1, actualFormatString.length() - 2);
+    }
 
-        // 4. Loop through the format string and issue syscalls
-        
-        // We expect (numArgs - 1) variables to be on the stack, e.g., [var1, var2, formatStr]
-        // So we read from index (numArgs - 2) down to 0
-        int varParamIndex = numArgs - 2; 
+    // 4. Loop through the format string and issue syscalls
+    
+    // We expect (numArgs - 1) variables to be on the stack, e.g., [var1, var2, formatStr]
+    // So we read from index (numArgs - 2) down to 0
+    int varParamIndex = numArgs - 2; 
 
-        for (int i = 0; i < actualFormatString.length(); ++i) {
-            if (actualFormatString[i] == '%') {
-                if (i + 1 < actualFormatString.length()) {
-                    char specifier = actualFormatString[i+1];
-                    
-                    // Check if we have a variable left to store into
-                    if (varParamIndex < 0) {
-                        output.push_back("    # ERROR: More format specifiers than variables\n");
-                        break;
-                    }
-                    
-                    // Get the variable name from the stack (e.g., "i7", "i8")
-                    std::string varToStore = paramStack[varParamIndex];
-                    
-                    // We assume this variable ("i7") holds the *address* (&a)
-                    // We need to load this address into a register first.
-                    std::string addrReg = getRegisterForVar(varToStore, false);
-
-                    if (specifier == 'd') {
-                        // Issue syscall to read an integer
-                        output.push_back("    li $v0, 5           # Read integer syscall\n");
-                        output.push_back("    syscall\n");
-                        
-                        // Store the result ($v0) *at the address* in addrReg
-                        output.push_back("    sw $v0, 0(" + addrReg + ")  # Store input into " + varToStore + "\n");
-                        
-                    } else if (specifier == 'f') {
-                        // Issue syscall to read a float
-                        output.push_back("    li $v0, 6           # Read float syscall\n");
-                        output.push_back("    syscall\n");
-                        
-                        // Store the result ($f0) *at the address* in addrReg
-                        output.push_back("    s.s $f0, 0(" + addrReg + ")  # Store input into " + varToStore + "\n");
-                    }
-                    
-                    varParamIndex--; // Move to the next variable
-                    i++; // Skip the specifier character
+    for (int i = 0; i < actualFormatString.length(); ++i) {
+        if (actualFormatString[i] == '%') {
+            if (i + 1 < actualFormatString.length()) {
+                char specifier = actualFormatString[i+1];
+                
+                // Check if we have a variable left to store into
+                if (varParamIndex < 0) {
+                    output.push_back("    # ERROR: More format specifiers than variables\n");
+                    break;
                 }
+                
+                // Get the variable name from the stack (e.g., "i7", "i8")
+                // This variable should contain the ADDRESS where we want to store the input
+                std::string addrHolderVar = paramStack[varParamIndex];
+                
+                // *** FIX: Load the ADDRESS from the variable, don't treat it as the address itself ***
+                // The variable addrHolderVar contains &a, so we need to load its value
+                std::string addrReg = getRegisterForVar(addrHolderVar, false, true); // loadValue = true
+                
+                // *** FIX: Add debug output to verify ***
+                output.push_back("    # Using address stored in " + addrHolderVar + " (value: " + addrReg + ") for scanf\n");
+
+                if (specifier == 'd') {
+                    // Issue syscall to read an integer
+                    output.push_back("    li $v0, 5           # Read integer syscall\n");
+                    output.push_back("    syscall\n");
+                    
+                    // Store the result ($v0) *at the address* stored in addrReg
+                    output.push_back("    sw $v0, 0(" + addrReg + ")  # Store input at address from " + addrHolderVar + "\n");
+                    
+                } else if (specifier == 'f') {
+                    // Issue syscall to read a float
+                    output.push_back("    li $v0, 6           # Read float syscall\n");
+                    output.push_back("    syscall\n");
+                    
+                    // Store the result ($f0) *at the address* stored in addrReg
+                    output.push_back("    s.s $f0, 0(" + addrReg + ")  # Store input at address from " + addrHolderVar + "\n");
+                }
+                
+                varParamIndex--; // Move to the next variable
+                i++; // Skip the specifier character
             }
         }
     }
+    
+    // *** FIX: Clear the paramStack after processing scanf ***
+    for (int i = 0; i < numArgs; i++) {
+        if (!paramStack.empty()) {
+            paramStack.pop_back();
+        }
+    }
+}
 
     void convertMallocCall(int numArgs, const std::string& resultVar) {
         if (numArgs >= 1 && !paramStack.empty()) {
