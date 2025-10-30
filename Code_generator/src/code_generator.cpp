@@ -542,7 +542,8 @@ public:
 
         // Check for binary operations before simple assignments.
         // Group 1: dest, Group 2: left, Group 3: op, Group 4: right, Group 5: type
-        std::regex binOpRegex(R"((\w+)\s*=\s*(\w+)\s*([\+\-\*\/])\s*(\w+)(?:\s*\[(\w+)\])?)");
+        // ***FIXED***: Added bitwise operators &, |, ^, <<, >> to regex
+        std::regex binOpRegex(R"((\w+)\s*=\s*(\w+)\s*(<<|>>|[\+\-\*\/&\|\^])\s*([\w\.-]+)(?:\s*\[(\w+)\])?)");
         if (std::regex_search(line, match, binOpRegex)) {
             std::string dest = match[1];
             std::string left = match[2];
@@ -555,26 +556,39 @@ public:
             } else if (type == "INT") {
                 convertIntOperation(dest, left, op, right);
             } else {
-                // Type is missing, infer from dest var
-                if (isFloatVar(dest)) {
-                    output.push_back("    # Inferred type as FLOAT from var " + dest + "\n");
+                // ***FIXED***: Infer type from OPERANDS (C-style promotion), not destination
+                if (isFloatVar(left) || isFloatVar(right) || std::regex_match(left, std::regex(R"(-?\d+\.\d+)")) || std::regex_match(right, std::regex(R"(-?\d+\.\d+)"))) {
+                    output.push_back("    # Inferred type as FLOAT from operands\n");
                     convertFloatOperation(dest, left, op, right);
-                } else if (isIntVar(dest)) {
-                    output.push_back("    # Inferred type as INT from var " + dest + "\n");
+                } else { 
+                    output.push_back("    # Inferred type as INT from operands\n");
                     convertIntOperation(dest, left, op, right);
-                } else {
-                    // ERROR: Cannot infer type per user request
-                    std::string errorMsg = "Ambiguous type for operation. Dest var '" + dest + "' must start with 'i' or 'f', or specify [INT]/[FLOAT].";
-                    output.push_back("# ERROR: " + errorMsg + "\n");
-                    output.push_back("# " + line + "\n");
-                    hasParserErrors = true;
-                    parserErrors.push_back(errorMsg + " (Line: " + line + ")");
                 }
             }
             return "# " + line + "\n";
         }
         
-        std::regex simpleAssign(R"((\w+)\s*=\s*([^;\[\+\-\*\/]+)(?:\s*\[([^\]]+)\])?)");
+        // ***FIX 1a:*** Moved comparison regex *before* simple assignment
+        // Comparison operations
+        std::regex cmpRegex(R"((\w+)\s*=\s*([\w\.-]+)\s*([><=!]+)\s*([\w\.-]+)\s*\[(\w+)\])");
+        if (std::regex_search(line, match, cmpRegex)) {
+            std::string dest = match[1];
+            std::string left = match[2];
+            std::string op = match[3];
+            std::string right = match[4];
+            std::string type = match[5];
+            
+            // ***FIXED***: Logic is correct. If either op is float, use float comparison.
+            if (type == "FLOAT" || isFloatVar(left) || isFloatVar(right) || std::regex_match(left, std::regex(R"(-?\d+\.\d+)")) || std::regex_match(right, std::regex(R"(-?\d+\.\d+)"))) {
+                convertFloatComparison(dest, left, op, right);
+            } else {
+                convertIntComparison(dest, left, op, right);
+            }
+            return "# " + line + "\n";
+        }
+        
+        // ***FIX 1b:*** Modified simpleAssign regex to exclude comparison ops
+        std::regex simpleAssign(R"((\w+)\s*=\s*([^;\[\+\-\*\/><=!]+)(?:\s*\[([^\]]+)\])?)");
         
         if (std::regex_search(line, match, simpleAssign)) {
 
@@ -591,6 +605,8 @@ public:
                 // Pre-register any constants associated with this global value
                 if (src.find("\"") != std::string::npos) {
                     getStringConstant(src);
+                } else if (std::regex_match(src, std::regex(R"(-?\d+\.\d+)"))) {
+                    getFloatConstant(src);
                 }
 
                 return "# " + line + " (Global assignment - storing for .data)\n";
@@ -729,21 +745,7 @@ public:
         // (This block is now moved up)
         
         // Comparison operations
-        std::regex cmpRegex(R"((\w+)\s*=\s*(\w+)\s*([><=!]+)\s*(\w+)\s*\[(\w+)\])");
-        if (std::regex_search(line, match, cmpRegex)) {
-            std::string dest = match[1];
-            std::string left = match[2];
-            std::string op = match[3];
-            std::string right = match[4];
-            std::string type = match[5];
-            
-            if (type == "FLOAT" || isFloatVar(left) || isFloatVar(right)) {
-                convertFloatComparison(dest, left, op, right);
-            } else {
-                convertIntComparison(dest, left, op, right);
-            }
-            return "# " + line + "\n";
-        }
+        // (This block is now moved up)
         
         // Conditional jumps
         std::regex condRegex(R"(ifFalse\s*(\w+)\s*goto\s*(\w+))");
@@ -755,6 +757,20 @@ public:
             output.push_back("    beq " + condReg + ", $zero, " + sanitizeName(label) + "  # ifFalse " + condition + "\n");
             return "# " + line + "\n";
         }
+        
+        // *** NEW FIX HERE ***
+        // Conditional jumps (if)
+        std::regex condTrueRegex(R"(if\s*(\w+)\s*goto\s*(\w+))");
+        if (std::regex_search(line, match, condTrueRegex)) {
+            std::string condition = match[1];
+            std::string label = match[2];
+            
+            std::string condReg = getRegisterForVar(condition, false);
+            // Branch if the condition is TRUE (not zero)
+            output.push_back("    bne " + condReg + ", $zero, " + sanitizeName(label) + "  # if " + condition + "\n");
+            return "# " + line + "\n";
+        }
+        // *** END NEW FIX ***
         
         // Unconditional jumps
         if (line.find("goto") == 0) {
@@ -796,70 +812,252 @@ public:
         return "# " + line + "\n";
     }
 
+    // ***FIX 2:*** Rewritten to handle mixed-type operands and literals
     void convertFloatOperation(const std::string& dest, const std::string& left, 
                              const std::string& op, const std::string& right) {
-        std::string leftReg = getRegisterForVar(left, true);
-        std::string rightReg = getRegisterForVar(right, true);
-        std::string destReg = getRegisterForVar(dest, true);
+        
+        std::string leftReg;
+        // --- Get Left Operand (and convert if needed) ---
+        if (std::regex_match(left, std::regex(R"(-?\d+\.\d+)"))) { // Float literal
+            leftReg = getRegisterForVar("temp_float_lit_l", true);
+            output.push_back("    l.s " + leftReg + ", " + getFloatConstant(left) + "\n");
+        } else if (std::regex_match(left, std::regex(R"(-?\d+)"))) { // Int literal
+            leftReg = getRegisterForVar("temp_float_lit_l", true);
+            std::string tempIntReg = "$v1"; // Use assembler temp
+            output.push_back("    li " + tempIntReg + ", " + left + "\n");
+            output.push_back("    mtc1 " + tempIntReg + ", " + leftReg + "\n");
+            output.push_back("    cvt.s.w " + leftReg + ", " + leftReg + "\n");
+        } else { // Variable
+            bool isLeftFloat = isFloatVar(left);
+            if (isLeftFloat) {
+                leftReg = getRegisterForVar(left, true);
+            } else {
+                std::string intReg = getRegisterForVar(left, false);
+                leftReg = getRegisterForVar("temp_float_conv_l_op", true);
+                output.push_back("    mtc1 " + intReg + ", " + leftReg + "  # Convert " + left + " to float\n");
+                output.push_back("    cvt.s.w " + leftReg + ", " + leftReg + "\n");
+            }
+        }
+        
+        std::string rightReg;
+        // --- Get Right Operand (and convert if needed) ---
+        if (std::regex_match(right, std::regex(R"(-?\d+\.\d+)"))) { // Float literal
+            rightReg = getRegisterForVar("temp_float_lit_r", true);
+            output.push_back("    l.s " + rightReg + ", " + getFloatConstant(right) + "\n");
+        } else if (std::regex_match(right, std::regex(R"(-?\d+)"))) { // Int literal
+            rightReg = getRegisterForVar("temp_float_lit_r", true);
+            std::string tempIntReg = "$v1"; // Use assembler temp
+            output.push_back("    li " + tempIntReg + ", " + right + "\n");
+            output.push_back("    mtc1 " + tempIntReg + ", " + rightReg + "\n");
+            output.push_back("    cvt.s.w " + rightReg + ", " + rightReg + "\n");
+        } else { // Variable
+            bool isRightFloat = isFloatVar(right);
+            if (isRightFloat) {
+                rightReg = getRegisterForVar(right, true);
+            } else {
+                std::string intReg = getRegisterForVar(right, false);
+                rightReg = getRegisterForVar("temp_float_conv_r_op", true);
+                output.push_back("    mtc1 " + intReg + ", " + rightReg + "  # Convert " + right + " to float\n");
+                output.push_back("    cvt.s.w " + rightReg + ", " + rightReg + "\n");
+            }
+        }
+
+        // --- Perform operation into a temporary float register ---
+        std::string tempResultReg = getRegisterForVar("temp_op_result_f", true);
         
         if (op == "+") {
-            output.push_back("    add.s " + destReg + ", " + leftReg + ", " + rightReg + "\n");
+            output.push_back("    add.s " + tempResultReg + ", " + leftReg + ", " + rightReg + "\n");
         } else if (op == "-") {
-            output.push_back("    sub.s " + destReg + ", " + leftReg + ", " + rightReg + "\n");
+            output.push_back("    sub.s " + tempResultReg + ", " + leftReg + ", " + rightReg + "\n");
         } else if (op == "*") {
-            output.push_back("    mul.s " + destReg + ", " + leftReg + ", " + rightReg + "\n");
+            output.push_back("    mul.s " + tempResultReg + ", " + leftReg + ", " + rightReg + "\n");
         } else if (op == "/") {
-            output.push_back("    div.s " + destReg + ", " + leftReg + ", " + rightReg + "\n");
+            output.push_back("    div.s " + tempResultReg + ", " + leftReg + ", " + rightReg + "\n");
+        } else {
+            output.push_back("    # ERROR: Bitwise operations on floats are not supported\n");
+            return; // Don't mark dirty
+        }
+        
+        // --- Assign the temp float result to the final destination ---
+        bool isDestFloat = isFloatVar(dest);
+        std::string destReg = getRegisterForVar(dest, isDestFloat);
+        
+        if (isDestFloat) {
+            // float_dest = float_result
+            output.push_back("    mov.s " + destReg + ", " + tempResultReg + "  # " + dest + " = (float_op)\n");
+        } else {
+            // int_dest = float_result (truncation)
+            output.push_back("    trunc.w.s " + tempResultReg + ", " + tempResultReg + "\n");
+            output.push_back("    mfc1 " + destReg + ", " + tempResultReg + "  # " + dest + " = (int)(float_op)\n");
         }
         
         markDirty(dest, destReg);
     }
 
+    // ***FIX 2:*** Rewritten to handle int literals
     void convertIntOperation(const std::string& dest, const std::string& left, 
                            const std::string& op, const std::string& right) {
-        std::string leftReg = getRegisterForVar(left, false);
-        std::string rightReg = getRegisterForVar(right, false);
-        std::string destReg = getRegisterForVar(dest, false);
+        
+        std::string leftReg;
+        if (std::regex_match(left, std::regex(R"(-?\d+)"))) {
+            leftReg = getRegisterForVar("temp_int_lit_l", false);
+            output.push_back("    li " + leftReg + ", " + left + "\n");
+        } else {
+            leftReg = getRegisterForVar(left, false);
+        }
+        
+        std::string rightReg;
+        if (std::regex_match(right, std::regex(R"(-?\d+)"))) {
+            rightReg = getRegisterForVar("temp_int_lit_r", false);
+            output.push_back("    li " + rightReg + ", " + right + "\n");
+        } else {
+            rightReg = getRegisterForVar(right, false);
+        }
+        
+        // --- Perform operation into a temporary int register ---
+        std::string tempResultReg = getRegisterForVar("temp_op_result_i", false);
         
         if (op == "+") {
-            output.push_back("    add " + destReg + ", " + leftReg + ", " + rightReg + "\n");
+            output.push_back("    add " + tempResultReg + ", " + leftReg + ", " + rightReg + "\n");
         } else if (op == "-") {
-            output.push_back("    sub " + destReg + ", " + leftReg + ", " + rightReg + "\n");
+            output.push_back("    sub " + tempResultReg + ", " + leftReg + ", " + rightReg + "\n");
         } else if (op == "*") {
-            output.push_back("    mul " + destReg + ", " + leftReg + ", " + rightReg + "\n");
+            output.push_back("    mul " + tempResultReg + ", " + leftReg + ", " + rightReg + "\n");
         } else if (op == "/") {
-            output.push_back("    div " + destReg + ", " + leftReg + ", " + rightReg + "\n");
+            output.push_back("    div " + tempResultReg + ", " + leftReg + ", " + rightReg + "\n");
+        } else if (op == "&") {
+            output.push_back("    and " + tempResultReg + ", " + leftReg + ", " + rightReg + "\n");
+        } else if (op == "|") {
+            output.push_back("    or " + tempResultReg + ", " + leftReg + ", " + rightReg + "\n");
+        } else if (op == "^") {
+            output.push_back("    xor " + tempResultReg + ", " + leftReg + ", " + rightReg + "\n");
+        } else if (op == "<<") {
+            output.push_back("    sllv " + tempResultReg + ", " + leftReg + ", " + rightReg + "\n");
+        } else if (op == ">>") {
+            output.push_back("    srlv " + tempResultReg + ", " + leftReg + ", " + rightReg + "\n");
+        }
+
+        // --- Assign the temp int result to the final destination ---
+        bool isDestFloat = isFloatVar(dest);
+        std::string destReg = getRegisterForVar(dest, isDestFloat);
+        
+        if (isDestFloat) {
+            // float_dest = int_result (conversion)
+            output.push_back("    mtc1 " + tempResultReg + ", " + destReg + "  # " + dest + " = (float)(int_op)\n");
+            output.push_back("    cvt.s.w " + destReg + ", " + destReg + "\n");
+        } else {
+            // int_dest = int_result
+            output.push_back("    move " + destReg + ", " + tempResultReg + "  # " + dest + " = (int_op)\n");
         }
         
         markDirty(dest, destReg);
     }
 
+    // ***FIX 2:*** Rewritten to handle mixed-type operands and literals
     void convertFloatComparison(const std::string& dest, const std::string& left, 
                               const std::string& op, const std::string& right) {
-        std::string leftReg = getRegisterForVar(left, true);
-        std::string rightReg = getRegisterForVar(right, true);
-        std::string destReg = getRegisterForVar(dest, false);
-        std::string trueLabel = generateLabel("float_true");
-        std::string endLabel = generateLabel("float_end");
         
+        std::string leftReg;
+        // --- Get Left Operand (and convert if needed) ---
+        if (std::regex_match(left, std::regex(R"(-?\d+\.\d+)"))) { // Float literal
+            leftReg = getRegisterForVar("temp_float_lit_l", true);
+            output.push_back("    l.s " + leftReg + ", " + getFloatConstant(left) + "\n");
+        } else if (std::regex_match(left, std::regex(R"(-?\d+)"))) { // Int literal
+            leftReg = getRegisterForVar("temp_float_lit_l", true);
+            std::string tempIntReg = "$v1"; // Use assembler temp
+            output.push_back("    li " + tempIntReg + ", " + left + "\n");
+            output.push_back("    mtc1 " + tempIntReg + ", " + leftReg + "\n");
+            output.push_back("    cvt.s.w " + leftReg + ", " + leftReg + "\n");
+        } else { // Variable
+            bool isLeftFloat = isFloatVar(left);
+            if (isLeftFloat) {
+                leftReg = getRegisterForVar(left, true);
+            } else {
+                std::string intReg = getRegisterForVar(left, false);
+                leftReg = getRegisterForVar("temp_float_conv_l_cmp", true);
+                output.push_back("    mtc1 " + intReg + ", " + leftReg + "  # Convert " + left + " to float\n");
+                output.push_back("    cvt.s.w " + leftReg + ", " + leftReg + "\n");
+            }
+        }
+        
+        std::string rightReg;
+        // --- Get Right Operand (and convert if needed) ---
+        if (std::regex_match(right, std::regex(R"(-?\d+\.\d+)"))) { // Float literal
+            rightReg = getRegisterForVar("temp_float_lit_r", true);
+            output.push_back("    l.s " + rightReg + ", " + getFloatConstant(right) + "\n");
+        } else if (std::regex_match(right, std::regex(R"(-?\d+)"))) { // Int literal
+            rightReg = getRegisterForVar("temp_float_lit_r", true);
+            std::string tempIntReg = "$v1"; // Use assembler temp
+            output.push_back("    li " + tempIntReg + ", " + right + "\n");
+            output.push_back("    mtc1 " + tempIntReg + ", " + rightReg + "\n");
+            output.push_back("    cvt.s.w " + rightReg + ", " + rightReg + "\n");
+        } else { // Variable
+            bool isRightFloat = isFloatVar(right);
+            if (isRightFloat) {
+                rightReg = getRegisterForVar(right, true);
+            } else {
+                std::string intReg = getRegisterForVar(right, false);
+                rightReg = getRegisterForVar("temp_float_conv_r_cmp", true);
+                output.push_back("    mtc1 " + intReg + ", " + rightReg + "  # Convert " + right + " to float\n");
+                output.push_back("    cvt.s.w " + rightReg + ", " + rightReg + "\n");
+            }
+        }
+
+        // --- Perform comparison ---
+        std::string destReg = getRegisterForVar(dest, false); // Result is always int (0 or 1)
+        std::string trueLabel = generateLabel("float_true");
+        std::string endLabel = generateLabel("float_cmp_end");
+        
+        bool branchOnTrue = true; 
+
         if (op == ">") {
             output.push_back("    c.lt.s " + rightReg + ", " + leftReg + "  # " + left + " > " + right + "\n");
         } else if (op == "==") {
             output.push_back("    c.eq.s " + leftReg + ", " + rightReg + "  # " + left + " == " + right + "\n");
+        } else if (op == "<") {
+            output.push_back("    c.lt.s " + leftReg + ", " + rightReg + "  # " + left + " < " + right + "\n");
+        } else if (op == ">=") {
+            output.push_back("    c.le.s " + rightReg + ", " + leftReg + "  # " + left + " >= " + right + "\n");
+        } else if (op == "<=") {
+            output.push_back("    c.le.s " + leftReg + ", " + rightReg + "  # " + left + " <= " + right + "\n");
+        } else if (op == "!=") {
+            output.push_back("    c.eq.s " + leftReg + ", " + rightReg + "  # " + left + " != " + right + "\n");
+            branchOnTrue = false; // Branch if condition is FALSE (i.e., they are NOT equal)
         }
         
-        output.push_back("    li " + destReg + ", 1\n");
-        output.push_back("    bc1t " + trueLabel + "\n");
+        // Optimized logic: set to 0, branch to end if condition fails, set to 1
         output.push_back("    li " + destReg + ", 0\n");
-        output.push_back(trueLabel + ":\n");
+        if (branchOnTrue) {
+            output.push_back("    bc1f " + endLabel + "\n"); // Branch if false
+        } else {
+            output.push_back("    bc1t " + endLabel + "\n"); // Branch if true (for !=)
+        }
+        output.push_back("    li " + destReg + ", 1\n"); // Set to 1 if branch not taken
+        output.push_back(endLabel + ":\n");
         
         markDirty(dest, destReg);
     }
 
+    // ***FIX 2:*** Rewritten to handle int literals
     void convertIntComparison(const std::string& dest, const std::string& left, 
                             const std::string& op, const std::string& right) {
-        std::string leftReg = getRegisterForVar(left, false);
-        std::string rightReg = getRegisterForVar(right, false);
+        
+        std::string leftReg;
+        if (std::regex_match(left, std::regex(R"(-?\d+)"))) {
+            leftReg = getRegisterForVar("temp_int_lit_l", false);
+            output.push_back("    li " + leftReg + ", " + left + "\n");
+        } else {
+            leftReg = getRegisterForVar(left, false);
+        }
+        
+        std::string rightReg;
+        if (std::regex_match(right, std::regex(R"(-?\d+)"))) {
+            rightReg = getRegisterForVar("temp_int_lit_r", false);
+            output.push_back("    li " + rightReg + ", " + right + "\n");
+        } else {
+            rightReg = getRegisterForVar(right, false);
+        }
+        
         std::string destReg = getRegisterForVar(dest, false);
         
         if (op == ">") {
@@ -868,6 +1066,12 @@ public:
             output.push_back("    seq " + destReg + ", " + leftReg + ", " + rightReg + "  # " + left + " == " + right + "\n");
         } else if (op == "!=") {
             output.push_back("    sne " + destReg + ", " + leftReg + ", " + rightReg + "  # " + left + " != " + right + "\n");
+        } else if (op == "<") {
+            output.push_back("    slt " + destReg + ", " + leftReg + ", " + rightReg + "  # " + left + " < " + right + "\n");
+        } else if (op == ">=") {
+            output.push_back("    sge " + destReg + ", " + leftReg + ", " + rightReg + "  # " + left + " >= " + right + "\n");
+        } else if (op == "<=") {
+            output.push_back("    sle " + destReg + ", " + leftReg + ", " + rightReg + "  # " + left + " <= " + right + "\n");
         }
         
         markDirty(dest, destReg);
