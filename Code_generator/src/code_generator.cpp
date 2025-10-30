@@ -153,38 +153,10 @@ public:
         return floatConstants[cleanValue];
     }
 
-    std::string getStringConstant(const std::string& value) {
+   std::string getStringConstant(const std::string& value) {
         std::string cleanValue = value;
         if (!cleanValue.empty() && cleanValue.front() == '"' && cleanValue.back() == '"') {
-            // This is the buggy line that assumes the input is already escaped
-            // cleanValue = cleanValue.substr(1, cleanValue.length() - 2);
-            
-            // --- START FIX ---
-            // 1. Correctly strip only the quotes
             cleanValue = cleanValue.substr(1, cleanValue.length() - 2);
-
-            // 2. Un-escape the C-style string
-            std::string processedValue;
-            processedValue.reserve(cleanValue.length()); // Reserve space
-            
-            for (size_t i = 0; i < cleanValue.length(); ++i) {
-                if (cleanValue[i] == '\\' && i + 1 < cleanValue.length()) {
-                    // Check for known escape sequences
-                    switch (cleanValue[i + 1]) {
-                        case 'n':  processedValue.push_back('\n'); i++; break;
-                        case 't':  processedValue.push_back('\t'); i++; break;
-                        case '\\': processedValue.push_back('\\'); i++; break;
-                        case '"':  processedValue.push_back('"');  i++; break;
-                        default:
-                            // Not a known escape, just add the backslash
-                            processedValue.push_back('\\');
-                    }
-                } else {
-                    processedValue.push_back(cleanValue[i]);
-                }
-            }
-            cleanValue = processedValue;
-            // --- END FIX ---
         }
         
         if (stringConstants.find(cleanValue) == stringConstants.end()) {
@@ -1722,63 +1694,64 @@ public:
     }
 
     std::string generateDataSection() {
-        std::string dataSection = ".data\n";
+        std::string data = ".data\n";
         
-        // Add string constants
-        for (const auto& pair : stringConstants) {
-            std::string sanitizedValue = pair.first;
-            // Escape special characters like \n
-            sanitizedValue = std::regex_replace(sanitizedValue, std::regex(R"(\\)"), R"(\\)");
-            sanitizedValue = std::regex_replace(sanitizedValue, std::regex(R"(\n)"), R"(\n)");
-            dataSection += pair.second + ": .asciiz \"" + sanitizedValue + "\"\n";
+        // String constants
+        for (const auto& strConst : stringConstants) {
+            data += strConst.second + ": .asciiz \"" + strConst.first + "\"\n";
         }
         
-        // Add float constants
-        for (const auto& pair : floatConstants) {
-            dataSection += pair.second + ": .float " + pair.first + "\n";
+        // Float constants
+        for (const auto& floatConst : floatConstants) {
+            data += floatConst.second + ": .float " + floatConst.first + "\n";
         }
         
-        // Add global variables
-        for (const auto& pair : globalVars) {
-            std::string varName = sanitizeName(pair.first);
-            std::string type = varTypes[pair.first];
-            std::string initialValue = "0"; // Default
-            
-            if (globalInitialValues.count(pair.first)) {
-                initialValue = globalInitialValues[pair.first];
-            }
-            
-            if (type == "float") {
-                if (std::regex_match(initialValue, std::regex(R"(-?\d+\.\d+)"))) {
-                    dataSection += varName + ": .float " + initialValue + "\n";
-                } else {
-                    dataSection += varName + ": .float 0.0\n";
-                }
-            } else if (type == "int" || type.find("unsigned") != std::string::npos) {
-                 if (std::regex_match(initialValue, std::regex(R"(-?\d+)"))) {
-                    dataSection += varName + ": .word " + initialValue + "\n";
-                } else {
-                    dataSection += varName + ": .word 0\n";
-                }
-            } else if (type == "char") {
-                 if (initialValue.front() == '\'' && initialValue.back() == '\'') {
-                    dataSection += varName + ": .byte " + std::to_string((int)initialValue[1]) + "\n";
-                 } else {
-                    dataSection += varName + ": .byte 0\n";
-                 }
-            } else {
-                // Default to .word for unknown or pointer types
-                dataSection += varName + ": .word 0\n";
-            }
-        }
-        
-        // Add newline string constant if not present (for printf)
-        if (stringConstants.find("\n") == stringConstants.end()) {
-            stringConstants["\n"] = "string_const_" + std::to_string(stringConstCount++);
-            dataSection += stringConstants["\n"] + ": .asciiz \"\\n\"\n";
-        }
+        // Global variables
+        for (const auto& varType : varTypes) {
+            if (globalVars.find(varType.first) != globalVars.end()) { 
 
-        return dataSection;
+                std::string originalVarName = varType.first;
+                std::string outputVarName = sanitizeName(originalVarName);
+                
+                std::string initialValue;
+                // Use the ORIGINAL name for lookup
+                bool hasInitialValue = globalInitialValues.count(originalVarName);
+                if (hasInitialValue) {
+                    initialValue = globalInitialValues[originalVarName];
+                }
+
+                if (varType.second.find("float") != std::string::npos) {
+                    // Use initial value if it's a float, else default to 0.0
+                    if (hasInitialValue && initialValue.find(".") != std::string::npos) {
+                        // Use outputVarName for the label and initialValue for the value
+                        data += outputVarName + ": .float " + initialValue + "\n";
+                    } else {
+                        data += outputVarName + ": .float 0.0\n";
+                    }
+                } else if (varType.second.find("char") != std::string::npos) {
+                    // Use initial value if it's a char, else default to 0
+                    if (hasInitialValue && initialValue.find("'") != std::string::npos) {
+                        data += outputVarName + ": .byte " + std::to_string((int)initialValue[1]) + "\n";
+                    } else {
+                        data += outputVarName + ": .byte 0\n";
+                    }
+                } else { // int, unsigned int, const int
+                    // Use initial value if it's an int, else default to 0
+                    if (hasInitialValue && std::regex_match(initialValue, std::regex(R"(-?\d+)"))) {
+                         data += outputVarName + ": .word " + initialValue + "\n";
+                    } else {
+                         data += outputVarName + ": .word 0\n";
+                    }
+                }
+            }
+        }
+        
+        // Default string if no strings defined
+        if (stringConstants.empty()) {
+            data += "default_str: .asciiz \"Hello World\\n\"\n";
+        }
+        
+        return data;
     }
 
     std::string generateTextSection() {
