@@ -19,6 +19,7 @@ private:
     std::map<std::string, int> globalVars;
     std::vector<std::string> paramStack;
     std::string currentFunc;
+    std::vector<std::string> scanfSubroutineBuffer;
     int labelCount;
     int stringConstCount;
     int floatConstCount;
@@ -78,6 +79,7 @@ public:
                           stackAllocPlaceholderIndex(-1),
                           hasParserErrors(false) {
         initializeRegisters();
+        scanfSubroutineBuffer.clear();
         
         // Initialize the set of SPIM keywords to avoid conflicts
         spimKeywords = {
@@ -1285,6 +1287,7 @@ if (std::regex_search(line, match, loadRegex)) {
     if (funcName == "printf") {
         convertPrintfCall(numArgs);
     } else if (funcName == "scanf") {
+        generateScanfSubroutines();
         convertScanfCall(numArgs,"");
     } else if (funcName == "malloc") {
         convertMallocCall(numArgs, resultVar);
@@ -1529,7 +1532,7 @@ if (std::regex_search(line, match, loadRegex)) {
     void convertScanfCall(int numArgs, const std::string& resultVar) {
     (void)resultVar;
     
-    output.push_back("    # scanf call - \n");
+    output.push_back("    # scanf call\n");
 
     // Get format string
     std::string formatStrVar = paramStack.back();
@@ -1678,222 +1681,229 @@ if (std::regex_search(line, match, loadRegex)) {
         }
     }
 
-    output.push_back("    j scanf_complete        # Skip parsing routines\n");
-
-    // Include all parsing subroutines
-    output.push_back("\n    #--------------------------------------\n");
-    output.push_back("    # scanf parsing subroutines\n");
-    output.push_back("    #--------------------------------------\n");
-
-    // Integer parsing
-    output.push_back("parse_int_safe:\n");
-    output.push_back("    move $t9, $a0           # $t9 = buffer pointer\n");
-    output.push_back("    addiu $sp, $sp, -16     # Save registers\n");
-    output.push_back("    sw $s0, 0($sp)\n");
-    output.push_back("    sw $s1, 4($sp)\n");
-    output.push_back("    sw $s2, 8($sp)\n");
-    output.push_back("    sw $s3, 12($sp)\n");
-    output.push_back("    \n");
-    output.push_back("    li $v0, 0               # result = 0\n");
-    output.push_back("    li $s1, 1               # sign = 1\n");
-    output.push_back("    li $s3, 0               # digit count\n");
-    output.push_back("    \n");
-    output.push_back("    # Skip leading whitespace\n");
-    output.push_back("skip_ws_loop_int:\n");
-    output.push_back("    lb $s0, 0($t9)\n");
-    output.push_back("    beqz $s0, parse_int_end\n");
-    output.push_back("    beq $s0, 32, skip_ws_int    # space\n");
-    output.push_back("    beq $s0, 9, skip_ws_int     # tab\n");
-    output.push_back("    beq $s0, 10, skip_ws_int    # newline\n");
-    output.push_back("    beq $s0, 13, skip_ws_int    # carriage return\n");
-    output.push_back("    j check_sign_int\n");
-    output.push_back("skip_ws_int:\n");
-    output.push_back("    addiu $t9, $t9, 1\n");
-    output.push_back("    j skip_ws_loop_int\n");
-    output.push_back("    \n");
-    output.push_back("check_sign_int:\n");
-    output.push_back("    lb $s0, 0($t9)\n");
-    output.push_back("    bne $s0, 45, parse_digits_int\n");
-    output.push_back("    li $s1, -1              # negative sign\n");
-    output.push_back("    addiu $t9, $t9, 1\n");
-    output.push_back("    \n");
-    output.push_back("parse_digits_int:\n");
-    output.push_back("    lb $s0, 0($t9)\n");
-    output.push_back("    beqz $s0, parse_int_end\n");
-    output.push_back("    \n");
-    output.push_back("    # Check for delimiter\n");
-    output.push_back("    beq $s0, 32, parse_int_end  # space\n");
-    output.push_back("    beq $s0, 9, parse_int_end   # tab\n");
-    output.push_back("    beq $s0, 10, parse_int_end  # newline\n");
-    output.push_back("    beq $s0, 13, parse_int_end  # carriage return\n");
-    output.push_back("    beq $s0, 44, parse_int_end  # comma\n");
-    output.push_back("    \n");
-    output.push_back("    # Check if digit\n");
-    output.push_back("    blt $s0, 48, parse_int_end  # < '0'\n");
-    output.push_back("    bgt $s0, 57, parse_int_end  # > '9'\n");
-    output.push_back("    \n");
-    output.push_back("    # Convert and accumulate\n");
-    output.push_back("    mul $v0, $v0, 10\n");
-    output.push_back("    addiu $s0, $s0, -48\n");
-    output.push_back("    add $v0, $v0, $s0\n");
-    output.push_back("    addiu $s3, $s3, 1       # increment digit count\n");
-    output.push_back("    addiu $t9, $t9, 1\n");
-    output.push_back("    j parse_digits_int\n");
-    output.push_back("    \n");
-    output.push_back("parse_int_end:\n");
-    output.push_back("    mul $v0, $v0, $s1       # apply sign\n");
-    output.push_back("    move $v1, $t9           # return updated pointer\n");
-    output.push_back("    \n");
-    output.push_back("    lw $s0, 0($sp)\n");
-    output.push_back("    lw $s1, 4($sp)\n");
-    output.push_back("    lw $s2, 8($sp)\n");
-    output.push_back("    lw $s3, 12($sp)\n");
-    output.push_back("    addiu $sp, $sp, 16\n");
-    output.push_back("    jr $ra\n");
-
-    // Float parsing
-    output.push_back("parse_float_safe:\n");
-    output.push_back("    move $t9, $a0           # $t9 = buffer pointer\n");
-    output.push_back("    addiu $sp, $sp, -24     # Save registers\n");
-    output.push_back("    sw $s0, 0($sp)\n");
-    output.push_back("    sw $s1, 4($sp)\n");
-    output.push_back("    sw $s2, 8($sp)\n");
-    output.push_back("    sw $s3, 12($sp)\n");
-    output.push_back("    sw $s4, 16($sp)\n");
-    output.push_back("    sw $ra, 20($sp)\n");
-    output.push_back("    \n");
-    output.push_back("    # Parse integer part\n");
-    output.push_back("    move $a0, $t9\n");
-    output.push_back("    jal parse_int_safe\n");
-    output.push_back("    move $t9, $v1           # Update pointer\n");
-    output.push_back("    mtc1 $v0, $f0           # Convert to float\n");
-    output.push_back("    cvt.s.w $f0, $f0\n");
-    output.push_back("    \n");
-    output.push_back("    # Check for decimal point\n");
-    output.push_back("    lb $s0, 0($t9)\n");
-    output.push_back("    bne $s0, 46, parse_float_end  # Not '.', done\n");
-    output.push_back("    addiu $t9, $t9, 1       # Skip '.'\n");
-    output.push_back("    \n");
-    output.push_back("    # Parse fractional part\n");
-    output.push_back("    li $s1, 0               # fractional value\n");
-    output.push_back("    li $s2, 1               # divisor\n");
-    output.push_back("    li $s3, 0               # digit count\n");
-    output.push_back("    \n");
-    output.push_back("parse_frac_digits:\n");
-    output.push_back("    lb $s0, 0($t9)\n");
-    output.push_back("    beqz $s0, parse_frac_end\n");
-    output.push_back("    blt $s0, 48, parse_frac_end  # < '0'\n");
-    output.push_back("    bgt $s0, 57, parse_frac_end  # > '9'\n");
-    output.push_back("    \n");
-    output.push_back("    # Convert and accumulate fractional part\n");
-    output.push_back("    mul $s1, $s1, 10\n");
-    output.push_back("    addiu $s0, $s0, -48\n");
-    output.push_back("    add $s1, $s1, $s0\n");
-    output.push_back("    mul $s2, $s2, 10        # Update divisor\n");
-    output.push_back("    addiu $t9, $t9, 1\n");
-    output.push_back("    j parse_frac_digits\n");
-    output.push_back("    \n");
-    output.push_back("parse_frac_end:\n");
-    output.push_back("    # Convert fractional part to float and add\n");
-    output.push_back("    mtc1 $s1, $f1\n");
-    output.push_back("    cvt.s.w $f1, $f1\n");
-    output.push_back("    mtc1 $s2, $f2\n");
-    output.push_back("    cvt.s.w $f2, $f2\n");
-    output.push_back("    div.s $f1, $f1, $f2     # fractional part\n");
-    output.push_back("    add.s $f0, $f0, $f1     # add to integer part\n");
-    output.push_back("    \n");
-    output.push_back("parse_float_end:\n");
-    output.push_back("    move $v1, $t9           # return updated pointer\n");
-    output.push_back("    \n");
-    output.push_back("    lw $s0, 0($sp)\n");
-    output.push_back("    lw $s1, 4($sp)\n");
-    output.push_back("    lw $s2, 8($sp)\n");
-    output.push_back("    lw $s3, 12($sp)\n");
-    output.push_back("    lw $s4, 16($sp)\n");
-    output.push_back("    lw $ra, 20($sp)\n");
-    output.push_back("    addiu $sp, $sp, 24\n");
-    output.push_back("    jr $ra\n");
-
-    // Character parsing
-    output.push_back("parse_char_safe:\n");
-    output.push_back("    move $t9, $a0           # $t9 = buffer pointer\n");
-    output.push_back("    addiu $sp, $sp, -4      # Save register\n");
-    output.push_back("    sw $s0, 0($sp)\n");
-    output.push_back("    \n");
-    output.push_back("    # Skip leading whitespace\n");
-    output.push_back("skip_ws_char:\n");
-    output.push_back("    lb $s0, 0($t9)\n");
-    output.push_back("    beqz $s0, parse_char_end\n");
-    output.push_back("    beq $s0, 32, skip_ws_char_next    # space\n");
-    output.push_back("    beq $s0, 9, skip_ws_char_next     # tab\n");
-    output.push_back("    beq $s0, 10, skip_ws_char_next    # newline\n");
-    output.push_back("    beq $s0, 13, skip_ws_char_next    # carriage return\n");
-    output.push_back("    j parse_char_found\n");
-    output.push_back("skip_ws_char_next:\n");
-    output.push_back("    addiu $t9, $t9, 1\n");
-    output.push_back("    j skip_ws_char\n");
-    output.push_back("    \n");
-    output.push_back("parse_char_found:\n");
-    output.push_back("    move $v0, $s0           # return character\n");
-    output.push_back("    addiu $t9, $t9, 1       # advance past character\n");
-    output.push_back("    \n");
-    output.push_back("parse_char_end:\n");
-    output.push_back("    move $v1, $t9           # return updated pointer\n");
-    output.push_back("    lw $s0, 0($sp)\n");
-    output.push_back("    addiu $sp, $sp, 4\n");
-    output.push_back("    jr $ra\n");
-
-    // String parsing
-    output.push_back("parse_string_safe:\n");
-    output.push_back("    move $t9, $a0           # $t9 = buffer pointer\n");
-    output.push_back("    move $t7, $a1           # $t7 = destination buffer\n");
-    output.push_back("    addiu $sp, $sp, -8      # Save registers\n");
-    output.push_back("    sw $s0, 0($sp)\n");
-    output.push_back("    sw $s1, 4($sp)\n");
-    output.push_back("    \n");
-    output.push_back("    # Skip leading whitespace\n");
-    output.push_back("skip_ws_string:\n");
-    output.push_back("    lb $s0, 0($t9)\n");
-    output.push_back("    beqz $s0, parse_string_end\n");
-    output.push_back("    beq $s0, 32, skip_ws_string_next    # space\n");
-    output.push_back("    beq $s0, 9, skip_ws_string_next     # tab\n");
-    output.push_back("    beq $s0, 10, skip_ws_string_next    # newline\n");
-    output.push_back("    beq $s0, 13, skip_ws_string_next    # carriage return\n");
-    output.push_back("    j parse_string_found\n");
-    output.push_back("skip_ws_string_next:\n");
-    output.push_back("    addiu $t9, $t9, 1\n");
-    output.push_back("    j skip_ws_string\n");
-    output.push_back("    \n");
-    output.push_back("parse_string_found:\n");
-    output.push_back("    li $s1, 0               # character count\n");
-    output.push_back("parse_string_loop:\n");
-    output.push_back("    lb $s0, 0($t9)\n");
-    output.push_back("    beqz $s0, parse_string_end\n");
-    output.push_back("    beq $s0, 32, parse_string_end  # space\n");
-    output.push_back("    beq $s0, 9, parse_string_end   # tab\n");
-    output.push_back("    beq $s0, 10, parse_string_end  # newline\n");
-    output.push_back("    beq $s0, 13, parse_string_end  # carriage return\n");
-    output.push_back("    \n");
-    output.push_back("    sb $s0, 0($t7)          # store character\n");
-    output.push_back("    addiu $t7, $t7, 1       # advance destination\n");
-    output.push_back("    addiu $t9, $t9, 1       # advance source\n");
-    output.push_back("    addiu $s1, $s1, 1       # increment count\n");
-    output.push_back("    j parse_string_loop\n");
-    output.push_back("    \n");
-    output.push_back("parse_string_end:\n");
-    output.push_back("    sb $zero, 0($t7)        # null terminate\n");
-    output.push_back("    move $v0, $t9           # return updated pointer\n");
-    output.push_back("    \n");
-    output.push_back("    lw $s0, 0($sp)\n");
-    output.push_back("    lw $s1, 4($sp)\n");
-    output.push_back("    addiu $sp, $sp, 8\n");
-    output.push_back("    jr $ra\n");
-
-    output.push_back("scanf_complete:\n");
-    output.push_back("    # scanf completed successfully\n");
-
     // Invalidate temporary registers
     invalidateSpecificRegisters({"$v0", "$v1", "$a0", "$a1", "$f0", "$f1", "$f2", "$t7", "$t8", "$t9"});
+}
+
+void generateScanfSubroutines() {
+    // Check if subroutines are already generated
+    static bool subroutinesGenerated = false;
+    if (subroutinesGenerated) return;
+    subroutinesGenerated = true;
+
+    // Store the subroutines separately and add them at the end
+    std::vector<std::string> scanfSubroutines;
+    
+    scanfSubroutines.push_back("\n    #--------------------------------------");
+    scanfSubroutines.push_back("    # scanf parsing subroutines");
+    scanfSubroutines.push_back("    #--------------------------------------");
+    
+    // Integer parsing
+    scanfSubroutines.push_back("parse_int_safe:");
+    scanfSubroutines.push_back("    move $t9, $a0           # $t9 = buffer pointer");
+    scanfSubroutines.push_back("    addiu $sp, $sp, -16     # Save registers");
+    scanfSubroutines.push_back("    sw $s0, 0($sp)");
+    scanfSubroutines.push_back("    sw $s1, 4($sp)");
+    scanfSubroutines.push_back("    sw $s2, 8($sp)");
+    scanfSubroutines.push_back("    sw $s3, 12($sp)");
+    scanfSubroutines.push_back("    ");
+    scanfSubroutines.push_back("    li $v0, 0               # result = 0");
+    scanfSubroutines.push_back("    li $s1, 1               # sign = 1");
+    scanfSubroutines.push_back("    li $s3, 0               # digit count");
+    scanfSubroutines.push_back("    ");
+    scanfSubroutines.push_back("    # Skip leading whitespace");
+    scanfSubroutines.push_back("skip_ws_loop_int:");
+    scanfSubroutines.push_back("    lb $s0, 0($t9)");
+    scanfSubroutines.push_back("    beqz $s0, parse_int_end");
+    scanfSubroutines.push_back("    beq $s0, 32, skip_ws_int    # space");
+    scanfSubroutines.push_back("    beq $s0, 9, skip_ws_int     # tab");
+    scanfSubroutines.push_back("    beq $s0, 10, skip_ws_int    # newline");
+    scanfSubroutines.push_back("    beq $s0, 13, skip_ws_int    # carriage return");
+    scanfSubroutines.push_back("    j check_sign_int");
+    scanfSubroutines.push_back("skip_ws_int:");
+    scanfSubroutines.push_back("    addiu $t9, $t9, 1");
+    scanfSubroutines.push_back("    j skip_ws_loop_int");
+    scanfSubroutines.push_back("    ");
+    scanfSubroutines.push_back("check_sign_int:");
+    scanfSubroutines.push_back("    lb $s0, 0($t9)");
+    scanfSubroutines.push_back("    bne $s0, 45, parse_digits_int");
+    scanfSubroutines.push_back("    li $s1, -1              # negative sign");
+    scanfSubroutines.push_back("    addiu $t9, $t9, 1");
+    scanfSubroutines.push_back("    ");
+    scanfSubroutines.push_back("parse_digits_int:");
+    scanfSubroutines.push_back("    lb $s0, 0($t9)");
+    scanfSubroutines.push_back("    beqz $s0, parse_int_end");
+    scanfSubroutines.push_back("    ");
+    scanfSubroutines.push_back("    # Check for delimiter");
+    scanfSubroutines.push_back("    beq $s0, 32, parse_int_end  # space");
+    scanfSubroutines.push_back("    beq $s0, 9, parse_int_end   # tab");
+    scanfSubroutines.push_back("    beq $s0, 10, parse_int_end  # newline");
+    scanfSubroutines.push_back("    beq $s0, 13, parse_int_end  # carriage return");
+    scanfSubroutines.push_back("    beq $s0, 44, parse_int_end  # comma");
+    scanfSubroutines.push_back("    ");
+    scanfSubroutines.push_back("    # Check if digit");
+    scanfSubroutines.push_back("    blt $s0, 48, parse_int_end  # < '0'");
+    scanfSubroutines.push_back("    bgt $s0, 57, parse_int_end  # > '9'");
+    scanfSubroutines.push_back("    ");
+    scanfSubroutines.push_back("    # Convert and accumulate");
+    scanfSubroutines.push_back("    mul $v0, $v0, 10");
+    scanfSubroutines.push_back("    addiu $s0, $s0, -48");
+    scanfSubroutines.push_back("    add $v0, $v0, $s0");
+    scanfSubroutines.push_back("    addiu $s3, $s3, 1       # increment digit count");
+    scanfSubroutines.push_back("    addiu $t9, $t9, 1");
+    scanfSubroutines.push_back("    j parse_digits_int");
+    scanfSubroutines.push_back("    ");
+    scanfSubroutines.push_back("parse_int_end:");
+    scanfSubroutines.push_back("    mul $v0, $v0, $s1       # apply sign");
+    scanfSubroutines.push_back("    move $v1, $t9           # return updated pointer");
+    scanfSubroutines.push_back("    ");
+    scanfSubroutines.push_back("    lw $s0, 0($sp)");
+    scanfSubroutines.push_back("    lw $s1, 4($sp)");
+    scanfSubroutines.push_back("    lw $s2, 8($sp)");
+    scanfSubroutines.push_back("    lw $s3, 12($sp)");
+    scanfSubroutines.push_back("    addiu $sp, $sp, 16");
+    scanfSubroutines.push_back("    jr $ra");
+
+    // Float parsing
+    scanfSubroutines.push_back("parse_float_safe:");
+    scanfSubroutines.push_back("    move $t9, $a0           # $t9 = buffer pointer");
+    scanfSubroutines.push_back("    addiu $sp, $sp, -24     # Save registers");
+    scanfSubroutines.push_back("    sw $s0, 0($sp)");
+    scanfSubroutines.push_back("    sw $s1, 4($sp)");
+    scanfSubroutines.push_back("    sw $s2, 8($sp)");
+    scanfSubroutines.push_back("    sw $s3, 12($sp)");
+    scanfSubroutines.push_back("    sw $s4, 16($sp)");
+    scanfSubroutines.push_back("    sw $ra, 20($sp)");
+    scanfSubroutines.push_back("    ");
+    scanfSubroutines.push_back("    # Parse integer part");
+    scanfSubroutines.push_back("    move $a0, $t9");
+    scanfSubroutines.push_back("    jal parse_int_safe");
+    scanfSubroutines.push_back("    move $t9, $v1           # Update pointer");
+    scanfSubroutines.push_back("    mtc1 $v0, $f0           # Convert to float");
+    scanfSubroutines.push_back("    cvt.s.w $f0, $f0");
+    scanfSubroutines.push_back("    ");
+    scanfSubroutines.push_back("    # Check for decimal point");
+    scanfSubroutines.push_back("    lb $s0, 0($t9)");
+    scanfSubroutines.push_back("    bne $s0, 46, parse_float_end  # Not '.', done");
+    scanfSubroutines.push_back("    addiu $t9, $t9, 1       # Skip '.'");
+    scanfSubroutines.push_back("    ");
+    scanfSubroutines.push_back("    # Parse fractional part");
+    scanfSubroutines.push_back("    li $s1, 0               # fractional value");
+    scanfSubroutines.push_back("    li $s2, 1               # divisor");
+    scanfSubroutines.push_back("    li $s3, 0               # digit count");
+    scanfSubroutines.push_back("    ");
+    scanfSubroutines.push_back("parse_frac_digits:");
+    scanfSubroutines.push_back("    lb $s0, 0($t9)");
+    scanfSubroutines.push_back("    beqz $s0, parse_frac_end");
+    scanfSubroutines.push_back("    blt $s0, 48, parse_frac_end  # < '0'");
+    scanfSubroutines.push_back("    bgt $s0, 57, parse_frac_end  # > '9'");
+    scanfSubroutines.push_back("    ");
+    scanfSubroutines.push_back("    # Convert and accumulate fractional part");
+    scanfSubroutines.push_back("    mul $s1, $s1, 10");
+    scanfSubroutines.push_back("    addiu $s0, $s0, -48");
+    scanfSubroutines.push_back("    add $s1, $s1, $s0");
+    scanfSubroutines.push_back("    mul $s2, $s2, 10        # Update divisor");
+    scanfSubroutines.push_back("    addiu $t9, $t9, 1");
+    scanfSubroutines.push_back("    j parse_frac_digits");
+    scanfSubroutines.push_back("    ");
+    scanfSubroutines.push_back("parse_frac_end:");
+    scanfSubroutines.push_back("    # Convert fractional part to float and add");
+    scanfSubroutines.push_back("    mtc1 $s1, $f1");
+    scanfSubroutines.push_back("    cvt.s.w $f1, $f1");
+    scanfSubroutines.push_back("    mtc1 $s2, $f2");
+    scanfSubroutines.push_back("    cvt.s.w $f2, $f2");
+    scanfSubroutines.push_back("    div.s $f1, $f1, $f2     # fractional part");
+    scanfSubroutines.push_back("    add.s $f0, $f0, $f1     # add to integer part");
+    scanfSubroutines.push_back("    ");
+    scanfSubroutines.push_back("parse_float_end:");
+    scanfSubroutines.push_back("    move $v1, $t9           # return updated pointer");
+    scanfSubroutines.push_back("    ");
+    scanfSubroutines.push_back("    lw $s0, 0($sp)");
+    scanfSubroutines.push_back("    lw $s1, 4($sp)");
+    scanfSubroutines.push_back("    lw $s2, 8($sp)");
+    scanfSubroutines.push_back("    lw $s3, 12($sp)");
+    scanfSubroutines.push_back("    lw $s4, 16($sp)");
+    scanfSubroutines.push_back("    lw $ra, 20($sp)");
+    scanfSubroutines.push_back("    addiu $sp, $sp, 24");
+    scanfSubroutines.push_back("    jr $ra");
+
+    // Character parsing
+    scanfSubroutines.push_back("parse_char_safe:");
+    scanfSubroutines.push_back("    move $t9, $a0           # $t9 = buffer pointer");
+    scanfSubroutines.push_back("    addiu $sp, $sp, -4      # Save register");
+    scanfSubroutines.push_back("    sw $s0, 0($sp)");
+    scanfSubroutines.push_back("    ");
+    scanfSubroutines.push_back("    # Skip leading whitespace");
+    scanfSubroutines.push_back("skip_ws_char:");
+    scanfSubroutines.push_back("    lb $s0, 0($t9)");
+    scanfSubroutines.push_back("    beqz $s0, parse_char_end");
+    scanfSubroutines.push_back("    beq $s0, 32, skip_ws_char_next    # space");
+    scanfSubroutines.push_back("    beq $s0, 9, skip_ws_char_next     # tab");
+    scanfSubroutines.push_back("    beq $s0, 10, skip_ws_char_next    # newline");
+    scanfSubroutines.push_back("    beq $s0, 13, skip_ws_char_next    # carriage return");
+    scanfSubroutines.push_back("    j parse_char_found");
+    scanfSubroutines.push_back("skip_ws_char_next:");
+    scanfSubroutines.push_back("    addiu $t9, $t9, 1");
+    scanfSubroutines.push_back("    j skip_ws_char");
+    scanfSubroutines.push_back("    ");
+    scanfSubroutines.push_back("parse_char_found:");
+    scanfSubroutines.push_back("    move $v0, $s0           # return character");
+    scanfSubroutines.push_back("    addiu $t9, $t9, 1       # advance past character");
+    scanfSubroutines.push_back("    ");
+    scanfSubroutines.push_back("parse_char_end:");
+    scanfSubroutines.push_back("    move $v1, $t9           # return updated pointer");
+    scanfSubroutines.push_back("    lw $s0, 0($sp)");
+    scanfSubroutines.push_back("    addiu $sp, $sp, 4");
+    scanfSubroutines.push_back("    jr $ra");
+
+    // String parsing
+    scanfSubroutines.push_back("parse_string_safe:");
+    scanfSubroutines.push_back("    move $t9, $a0           # $t9 = buffer pointer");
+    scanfSubroutines.push_back("    move $t7, $a1           # $t7 = destination buffer");
+    scanfSubroutines.push_back("    addiu $sp, $sp, -8      # Save registers");
+    scanfSubroutines.push_back("    sw $s0, 0($sp)");
+    scanfSubroutines.push_back("    sw $s1, 4($sp)");
+    scanfSubroutines.push_back("    ");
+    scanfSubroutines.push_back("    # Skip leading whitespace");
+    scanfSubroutines.push_back("skip_ws_string:");
+    scanfSubroutines.push_back("    lb $s0, 0($t9)");
+    scanfSubroutines.push_back("    beqz $s0, parse_string_end");
+    scanfSubroutines.push_back("    beq $s0, 32, skip_ws_string_next    # space");
+    scanfSubroutines.push_back("    beq $s0, 9, skip_ws_string_next     # tab");
+    scanfSubroutines.push_back("    beq $s0, 10, skip_ws_string_next    # newline");
+    scanfSubroutines.push_back("    beq $s0, 13, skip_ws_string_next    # carriage return");
+    scanfSubroutines.push_back("    j parse_string_found");
+    scanfSubroutines.push_back("skip_ws_string_next:");
+    scanfSubroutines.push_back("    addiu $t9, $t9, 1");
+    scanfSubroutines.push_back("    j skip_ws_string");
+    scanfSubroutines.push_back("    ");
+    scanfSubroutines.push_back("parse_string_found:");
+    scanfSubroutines.push_back("    li $s1, 0               # character count");
+    scanfSubroutines.push_back("parse_string_loop:");
+    scanfSubroutines.push_back("    lb $s0, 0($t9)");
+    scanfSubroutines.push_back("    beqz $s0, parse_string_end");
+    scanfSubroutines.push_back("    beq $s0, 32, parse_string_end  # space");
+    scanfSubroutines.push_back("    beq $s0, 9, parse_string_end   # tab");
+    scanfSubroutines.push_back("    beq $s0, 10, parse_string_end  # newline");
+    scanfSubroutines.push_back("    beq $s0, 13, parse_string_end  # carriage return");
+    scanfSubroutines.push_back("    ");
+    scanfSubroutines.push_back("    sb $s0, 0($t7)          # store character");
+    scanfSubroutines.push_back("    addiu $t7, $t7, 1       # advance destination");
+    scanfSubroutines.push_back("    addiu $t9, $t9, 1       # advance source");
+    scanfSubroutines.push_back("    addiu $s1, $s1, 1       # increment count");
+    scanfSubroutines.push_back("    j parse_string_loop");
+    scanfSubroutines.push_back("    ");
+    scanfSubroutines.push_back("parse_string_end:");
+    scanfSubroutines.push_back("    sb $zero, 0($t7)        # null terminate");
+    scanfSubroutines.push_back("    move $v0, $t9           # return updated pointer");
+    scanfSubroutines.push_back("    ");
+    scanfSubroutines.push_back("    lw $s0, 0($sp)");
+    scanfSubroutines.push_back("    lw $s1, 4($sp)");
+    scanfSubroutines.push_back("    addiu $sp, $sp, 8");
+    scanfSubroutines.push_back("    jr $ra");
+    
+    // Store the subroutines for later insertion at the end
+    scanfSubroutineBuffer = scanfSubroutines;
 }
 
     void convertMallocCall(int numArgs, const std::string& resultVar) {
@@ -2038,6 +2048,9 @@ if (std::regex_search(line, match, loadRegex)) {
         // Normal generated code
         for (const std::string& line : output) {
             textSection += line;
+        }
+        for (const std::string& line : scanfSubroutineBuffer) {
+            textSection += line + "\n";
         }
     }
     
