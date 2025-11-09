@@ -1101,10 +1101,6 @@ if (std::regex_search(line, match, loadRegex)) {
     else if (op == "^") opCode = rightIsLiteral ? "xori" : "xor";
     else if (op == "<<") opCode = rightIsLiteral ? "sll" : "sllv";
     else if (op == ">>") opCode = rightIsLiteral ? "srl" : "srlv";
-    else {
-        output.push_back("    # ERROR: Unsupported int operation: " + op + "\n");
-        return;
-    }
     
     if (rightIsLiteral) {
         std::string rightVal = right;
@@ -1169,10 +1165,6 @@ if (std::regex_search(line, match, loadRegex)) {
         else if (op == "-") opCode = "sub.s";
         else if (op == "*") opCode = "mul.s";
         else if (op == "/") opCode = "div.s";
-        else {
-            output.push_back("    # ERROR: Unsupported float operation: " + op + "\n");
-            return;
-        }
 
         output.push_back("    " + opCode + " " + destReg + ", " + leftReg + ", " + rightReg + " # " + dest + " = " + left + " " + op + " " + right + "\n");
         markDirty(dest, destReg);
@@ -1260,10 +1252,6 @@ if (std::regex_search(line, match, loadRegex)) {
         else if (op == "!=") opCode = "c.eq.s"; // Inverted logic
         else if (op == ">") opCode = "c.lt.s"; // Swapped operands
         else if (op == ">=") opCode = "c.le.s"; // Swapped operands
-        else {
-            output.push_back("    # ERROR: Unsupported float comparison: " + op + "\n");
-            return;
-        }
 
         if (op == ">" || op == ">=") {
             output.push_back("    " + opCode + " " + rightReg + ", " + leftReg + " # " + right + " " + (op == ">" ? "<" : "<=") + " " + left + "\n");
@@ -1397,11 +1385,6 @@ if (std::regex_search(line, match, loadRegex)) {
 
     void convertPrintfCall(int numArgs) {
     output.push_back("    # printf call\n");
-
-    if (numArgs < 1 || paramStack.empty()) {
-        output.push_back("    # ERROR: Not enough args for printf\n");
-        return;
-    }
 
     // Get the format string variable and remove it from paramStack
     std::string formatStrVar = paramStack.back();
@@ -1547,11 +1530,6 @@ if (std::regex_search(line, match, loadRegex)) {
     (void)resultVar;
     
     output.push_back("    # scanf call - \n");
-    
-    if (numArgs < 2 || paramStack.empty()) {
-        output.push_back("    # ERROR: Not enough args for scanf\n");
-        return;
-    }
 
     // Get format string
     std::string formatStrVar = paramStack.back();
@@ -1939,74 +1917,132 @@ if (std::regex_search(line, match, loadRegex)) {
     }
 
     std::string generateDataSection() {
-        std::string data = ".data\n";
-        
-        // String constants
-        for (const auto& strConst : stringConstants) {
-            data += strConst.second + ": .asciiz \"" + strConst.first + "\"\n";
-        }
-        
-        // Float constants
-        for (const auto& floatConst : floatConstants) {
-            data += floatConst.second + ": .float " + floatConst.first + "\n";
-        }
-        
-        // Global variables
-        for (const auto& varType : varTypes) {
-            if (globalVars.find(varType.first) != globalVars.end()) { 
+    std::string data = ".data\n";
+    
+    // String constants
+    for (const auto& strConst : stringConstants) {
+        data += strConst.second + ": .asciiz \"" + strConst.first + "\"\n";
+    }
+    
+    // Float constants
+    for (const auto& floatConst : floatConstants) {
+        data += floatConst.second + ": .float " + floatConst.first + "\n";
+    }
+    
+    // Global variables
+    for (const auto& varType : varTypes) {
+        if (globalVars.find(varType.first) != globalVars.end()) { 
+            std::string originalVarName = varType.first;
+            std::string outputVarName = sanitizeName(originalVarName);
+            
+            std::string initialValue;
+            bool hasInitialValue = globalInitialValues.count(originalVarName);
+            if (hasInitialValue) {
+                initialValue = globalInitialValues[originalVarName];
+            }
 
-                std::string originalVarName = varType.first;
-                std::string outputVarName = sanitizeName(originalVarName);
-                
-                std::string initialValue;
-                bool hasInitialValue = globalInitialValues.count(originalVarName);
-                if (hasInitialValue) {
-                    initialValue = globalInitialValues[originalVarName];
+            if (varType.second.find("float") != std::string::npos) {
+                if (hasInitialValue && initialValue.find(".") != std::string::npos) {
+                    data += outputVarName + ": .float " + initialValue + "\n";
+                } else {
+                    data += outputVarName + ": .float 0.0\n";
                 }
-
-                if (varType.second.find("float") != std::string::npos) {
-                    // Use initial value if it's a float, else default to 0.0
-                    if (hasInitialValue && initialValue.find(".") != std::string::npos) {
-                        // Use outputVarName for the label and initialValue for the value
-                        data += outputVarName + ": .float " + initialValue + "\n";
-                    } else {
-                        data += outputVarName + ": .float 0.0\n";
-                    }
-                } else if (varType.second.find("char") != std::string::npos) {
-                    // Use initial value if it's a char, else default to 0
-                    if (hasInitialValue && initialValue.find("'") != std::string::npos) {
-                        data += outputVarName + ": .byte " + std::to_string((int)initialValue[1]) + "\n";
-                    } else {
-                        data += outputVarName + ": .byte 0\n";
-                    }
-                } else { // int, unsigned int, const int
-                    // Use initial value if it's an int, else default to 0
-                    if (hasInitialValue && std::regex_match(initialValue, std::regex(R"(-?\d+)"))) {
-                         data += outputVarName + ": .word " + initialValue + "\n";
-                    } else {
-                         data += outputVarName + ": .word 0\n";
-                    }
+            } else if (varType.second.find("char") != std::string::npos) {
+                if (hasInitialValue && initialValue.find("'") != std::string::npos) {
+                    data += outputVarName + ": .byte " + std::to_string((int)initialValue[1]) + "\n";
+                } else {
+                    data += outputVarName + ": .byte 0\n";
+                }
+            } else {
+                if (hasInitialValue && std::regex_match(initialValue, std::regex(R"(-?\d+)"))) {
+                    data += outputVarName + ": .word " + initialValue + "\n";
+                } else {
+                    data += outputVarName + ": .word 0\n";
                 }
             }
         }
+    }
+    
+    // Parser error strings
+    if (hasParserErrors) {
+        data += "parser_error_header: .asciiz \"=== PARSER ERRORS DETECTED ===\\n\"\n";
+        data += "parser_error_footer: .asciiz \"=== PROGRAM EXECUTION ABORTED ===\\n\"\n";
+        data += "newline: .asciiz \"\\n\"\n";
         
-        // Default string if no strings defined
+        // Create labels for each parser error
+        for (size_t i = 0; i < parserErrors.size(); i++) {
+            std::string cleanError = parserErrors[i];
+            
+            // Escape special characters for assembly strings
+            std::string escapedError;
+            for (char c : cleanError) {
+                if (c == '\n') {
+                    escapedError += "\\n";
+                } else if (c == '\t') {
+                    escapedError += "\\t";
+                } else if (c == '\r') {
+                    escapedError += "\\r";
+                } else if (c == '"') {
+                    escapedError += "\\\"";
+                } else if (c == '\\') {
+                    escapedError += "\\\\";
+                } else {
+                    escapedError += c;
+                }
+            }
+            
+            data += "parser_error_" + std::to_string(i) + ": .asciiz \"" + escapedError + "\"\n";
+        }
+    } else {
+        // Default string if no strings defined and no errors
         if (stringConstants.empty()) {
             data += "default_str: .asciiz \"Hello World\\n\"\n";
         }
-        
-        return data;
     }
+    
+    return data;
+}
 
     std::string generateTextSection() {
-        std::string textSection = ".text\n.globl main\n";
+    std::string textSection = ".text\n.globl main\n";
+    
+    if (hasParserErrors) {
+        // Generate code to print parser errors at runtime
+        textSection += "\nmain:\n";
+        textSection += "    # Print parser error header\n";
+        textSection += "    li $v0, 4\n";
+        textSection += "    la $a0, parser_error_header\n";
+        textSection += "    syscall\n\n";
         
+        // Print each parser error exactly as they appear
+        for (size_t i = 0; i < parserErrors.size(); i++) {
+            textSection += "    # Printing parser error " + std::to_string(i + 1) + "\n";
+            textSection += "    li $v0, 4\n";
+            textSection += "    la $a0, parser_error_" + std::to_string(i) + "\n";
+            textSection += "    syscall\n";
+            
+            // Add newline after each error
+            textSection += "    li $v0, 4\n";
+            textSection += "    la $a0, newline\n";
+            textSection += "    syscall\n\n";
+        }
+        
+        // Print footer and exit
+        textSection += "    # Print footer and exit\n";
+        textSection += "    li $v0, 4\n";
+        textSection += "    la $a0, parser_error_footer\n";
+        textSection += "    syscall\n";
+        textSection += "    li $v0, 10\n";
+        textSection += "    syscall\n";
+    } else {
+        // Normal generated code
         for (const std::string& line : output) {
             textSection += line;
         }
-        
-        return textSection;
     }
+    
+    return textSection;
+}
 
     std::string trim(const std::string& str) {
         size_t first = str.find_first_not_of(" \t");
@@ -2019,73 +2055,73 @@ if (std::regex_search(line, match, loadRegex)) {
 
 public:
     void convert(const std::string& inputFile, const std::string& outputFile) {
-        std::ifstream inFile(inputFile);
-        std::ofstream outFile(outputFile);
-        
-        if (!inFile.is_open()) {
-            std::cerr << "Error: Cannot open input file " << inputFile << std::endl;
-            return;
-        }
-        
-        if (!outFile.is_open()) {
-            std::cerr << "Error: Cannot create output file " << outputFile << std::endl;
-            return;
-        }
-        
-        // First pass: Identify global variables and function names
-        std::string line;
-        while (std::getline(inFile, line)) {
-            line = trim(line);
-            if (line.empty()) continue;
-            
-            if (line.find("Variable declaration:") != std::string::npos) {
-                parseVariableDeclaration(line);
-            }
-            if (line.find("BeginFunc") != std::string::npos) {
-                currentFunc = "in_function"; // Just to mark we are no longer global
-            }
-            if (line.find("EndFunc") != std::string::npos) {
-                currentFunc = "";
-            }
-        }
-        
-        // Reset for second pass
-        inFile.clear();
-        inFile.seekg(0, std::ios::beg);
-        currentFunc = "";
-        
-        // Second pass: Generate assembly
-        while (std::getline(inFile, line)) {
-            line = trim(line);
-            if (line.empty()) continue;
-            
-            std::string asmLine = convertInstruction(line);
-            if (asmLine.find("# Unhandled") != 0 && asmLine.find("# ") != 0) {
-            }
-        }
-        
-        if (hasParserErrors) {
-            outFile << "# PARSER ERRORS DETECTED. NO ASSEMBLY GENERATED.\n";
-            for(const std::string& err : parserErrors) {
-                outFile << "# " << err << "\n";
-            }
-            
-            std::cerr << "Parser errors detected! Error messages written to " << outputFile << std::endl;
-            std::cout << "No assembly code generated due to syntax errors." << std::endl;
-        } else {
-            // Write the complete SPIM program
-            outFile << "# SPIM MIPS assembly generated from TAC\n";
-            outFile << "# Input file: " << inputFile << "\n";
-            outFile << generateDataSection() << "\n";
-            outFile << generateTextSection() << "\n";
-            
-            std::cout << "Conversion completed! Assembly code written to " << outputFile << std::endl;
-            std::cout << "Run with: spim -f " << outputFile << std::endl;
-        }
-        
-        inFile.close();
-        outFile.close();
+    std::ifstream inFile(inputFile);
+    std::ofstream outFile(outputFile);
+    
+    if (!inFile.is_open()) {
+        std::cerr << "Error: Cannot open input file " << inputFile << std::endl;
+        return;
     }
+    
+    if (!outFile.is_open()) {
+        std::cerr << "Error: Cannot create output file " << outputFile << std::endl;
+        return;
+    }
+    
+    // First pass: Identify global variables and function names
+    std::string line;
+    while (std::getline(inFile, line)) {
+        line = trim(line);
+        if (line.empty()) continue;
+        
+        if (line.find("Variable declaration:") != std::string::npos) {
+            parseVariableDeclaration(line);
+        }
+        if (line.find("BeginFunc") != std::string::npos) {
+            currentFunc = "in_function";
+        }
+        if (line.find("EndFunc") != std::string::npos) {
+            currentFunc = "";
+        }
+    }
+    
+    // Reset for second pass
+    inFile.clear();
+    inFile.seekg(0, std::ios::beg);
+    currentFunc = "";
+    
+    // Second pass: Generate assembly and collect parser errors
+    while (std::getline(inFile, line)) {
+        line = trim(line);
+        if (line.empty()) continue;
+        
+        std::string asmLine = convertInstruction(line);
+    }
+    
+    // Write the complete SPIM program
+    outFile << "# SPIM MIPS assembly generated from TAC\n";
+    outFile << "# Input file: " << inputFile << "\n";
+    
+    if (hasParserErrors) {
+        outFile << "\n";
+        std::cerr << "Parser errors detected! Error messages will be printed when running the assembly." << std::endl;
+        std::cerr << "Number of parser errors: " << parserErrors.size() << std::endl;
+    }
+    
+    outFile << generateDataSection() << "\n";
+    outFile << generateTextSection() << "\n";
+    
+    if (!hasParserErrors) {
+        std::cout << "Conversion completed! Assembly code written to " << outputFile << std::endl;
+        std::cout << "Run with: spim -f " << outputFile << std::endl;
+    } else {
+        std::cout << "Assembly with error reporting generated! Run with: spim -f " << outputFile << std::endl;
+        std::cout << "The program will display " << parserErrors.size() << " parser errors when executed." << std::endl;
+    }
+    
+    inFile.close();
+    outFile.close();
+}
 };
 
 int main(int argc, char* argv[]) {
