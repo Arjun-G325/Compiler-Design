@@ -51,6 +51,11 @@ private:
         bool isFloat;             // Whether variable is float type
         bool isSpilled;           // Whether variable is spilled to stack
         std::string pointsTo;
+        
+        // Constructor to initialize all fields
+        VariableInfo() : stackOffset(-1), dirty(false), isFloat(false), isSpilled(false), pointsTo("") {}
+        VariableInfo(std::set<std::string> regs, int offset, bool dir, bool isF, bool spilled, std::string points = "") 
+            : registers(regs), stackOffset(offset), dirty(dir), isFloat(isF), isSpilled(spilled), pointsTo(points) {}
     };
 
     std::map<std::string, RegisterInfo> intRegisters;
@@ -281,13 +286,20 @@ public:
                             output.push_back("    lw " + reg + ", " + sanitizeName(var) + "\n");
                         }
                     }
+                    else if (loadValue && variableInfo.find(var) == variableInfo.end() && 
+                        !isGlobalVar(var) && !std::regex_match(var, std::regex(R"(-?\d+)")) &&
+                        !std::regex_match(var, std::regex(R"(-?\d+\.\d+)")) && 
+                        var.find("'") != 0 && var.find("\"") != 0) {
+                        
+                        output.push_back("    # WARNING: Variable " + var + " may be uninitialized\n");
+                    }
                 } else {
                      output.push_back("    # Allocating " + reg + " for " + var + "\n");
                 }
                 
                 // Update variable info
                 if (variableInfo.find(var) == variableInfo.end()) {
-                    variableInfo[var] = {{reg}, -1, false, isFloat, false};
+                    variableInfo[var] = VariableInfo({reg}, -1, false, isFloat, false, "");
                 } else {
                     variableInfo[var].registers.insert(reg);
                 }
@@ -338,13 +350,20 @@ public:
                     output.push_back("    lw " + lruReg + ", " + sanitizeName(var) + "\n");
                 }
             }
+            else if (loadValue && variableInfo.find(var) == variableInfo.end() && 
+                !isGlobalVar(var) && !std::regex_match(var, std::regex(R"(-?\d+)")) &&
+                !std::regex_match(var, std::regex(R"(-?\d+\.\d+)")) && 
+                var.find("'") != 0 && var.find("\"") != 0) {
+                
+                output.push_back("    # WARNING: Variable " + var + " may be uninitialized\n");
+            }
         } else {
-            output.push_back("    # Allocating " + lruReg + " for " + var + " (no load)\n");
+            output.push_back("    # Allocating " + lruReg + " for " + var + " \n");
         }
         
         // Update variable info
         if (variableInfo.find(var) == variableInfo.end()) {
-            variableInfo[var] = {{lruReg}, -1, false, isFloat, false};
+            variableInfo[var] = VariableInfo({lruReg}, -1, false, isFloat, false, "");
         } else {
             variableInfo[var].registers.insert(lruReg);
         }
@@ -397,14 +416,12 @@ public:
 
     void spillRegister(const std::string& reg) {
         RegisterInfo reg_info;
-        bool isFloatReg = false;
+        // Remove unused variable isFloatReg
 
         if (intRegisters.find(reg) != intRegisters.end()) {
             reg_info = intRegisters[reg];
-            isFloatReg = false;
         } else if (floatRegisters.find(reg) != floatRegisters.end()) {
             reg_info = floatRegisters[reg];
-            isFloatReg = true;
         } else {
             return; // Not a spillable register
         }
@@ -422,7 +439,7 @@ public:
 
     void allocateStackSpace(const std::string& var) {
         if (variableInfo.find(var) == variableInfo.end()) {
-            variableInfo[var] = {{}, -1, false, isFloatVar(var), false};
+            variableInfo[var] = VariableInfo({}, -1, false, isFloatVar(var), false, "");
         }
         
         if (variableInfo[var].stackOffset == -1 && !var.empty() && var[0] != 't' && var[0] != 'i') {
@@ -437,7 +454,7 @@ public:
         if (variableInfo.find(var) == variableInfo.end()) {
             // Variable doesn't exist yet, create it
             bool isFloat = floatRegisters.count(reg) > 0;
-            variableInfo[var] = {{reg}, -1, true, isFloat, false};
+            variableInfo[var] = VariableInfo({reg}, -1, true, isFloat, false, "");
         } else {
             variableInfo[var].dirty = true;
         }
@@ -507,6 +524,7 @@ public:
     }
     // Function argument handling for >4 arguments
     void setupFunctionArgs(int numArgs, const std::vector<std::string>& args, bool isFloatCall) {
+        (void)isFloatCall; // Mark parameter as unused
         int intArgCount = 0;
         int floatArgCount = 0;
         int stackArgOffset = 0;
@@ -525,10 +543,10 @@ public:
             
             if (i < 4) {
                 // First 4 arguments go in registers
-                if (isFloat && floatArgCount < 2) {
+                if (isFloat && floatArgCount < (int)argFloatRegs.size()) {
                     std::string reg = argFloatRegs[floatArgCount++];
                     output.push_back("    mov.s " + reg + ", " + argReg + "  # Float argument " + std::to_string(i+1) + "\n");
-                } else if (!isFloat && intArgCount < 4) {
+                } else if (!isFloat && intArgCount < (int)argIntRegs.size()) {
                     std::string reg = argIntRegs[intArgCount++];
                     output.push_back("    move " + reg + ", " + argReg + "  # Integer argument " + std::to_string(i+1) + "\n");
                 } else {
@@ -589,501 +607,653 @@ public:
     }
 
     std::string convertInstruction(const std::string& line) {
-        std::string result = "";
-        
-        if (hasParserError(line)) {
-            hasParserErrors = true;
-            parserErrors.push_back(line);
-            return "";
+    std::string result = "";
+    
+    if (hasParserError(line)) {
+        hasParserErrors = true;
+        parserErrors.push_back(line);
+        return "";
+    }
+    
+    if (line.find("//") == 0) {
+        if (line.find("Variable declaration:") != std::string::npos) {
+            parseVariableDeclaration(line);
         }
-        
-        if (line.find("//") == 0) {
-            if (line.find("Variable declaration:") != std::string::npos) {
-                parseVariableDeclaration(line);
-            }
-            else if (line.find("Parameter:") != std::string::npos && !currentFunc.empty()) {
-                std::regex paramComment(R"(//\s*Parameter:\s*(\w+))");
-                std::smatch paramMatch;
-                if (std::regex_search(line, paramMatch, paramComment)) {
-                    std::string paramName = paramMatch[1];
-                    bool isParamFloat = isFloatVar(paramName);
-                    
-                    allocateStackSpace(paramName);
-                    
-                    std::string destReg = getRegisterForVar(paramName, isParamFloat, false);
-                    
-                    if (isParamFloat) {
-                        if (floatParamIndex < argFloatRegs.size()) {
-                            output.push_back("    mov.s " + destReg + ", " + argFloatRegs[floatParamIndex] + "  # Copy param " + paramName + "\n");
-                            output.push_back("    s.s " + destReg + ", " + std::to_string(variableInfo[paramName].stackOffset) + "($fp)  # Store param " + paramName + " to stack\n");
-                            floatParamIndex++;
-                        } else {
-                            int stackOffset = 8 + (floatParamIndex - argFloatRegs.size()) * 4;
-                            output.push_back("    l.s " + destReg + ", " + std::to_string(stackOffset) + "($fp)  # Load stack param " + paramName + "\n");
-                            output.push_back("    s.s " + destReg + ", " + std::to_string(variableInfo[paramName].stackOffset) + "($fp)  # Store param " + paramName + " to local stack\n");
-                            floatParamIndex++;
-                        }
+        else if (line.find("Parameter:") != std::string::npos && !currentFunc.empty()) {
+            std::regex paramComment(R"(//\s*Parameter:\s*(\w+))");
+            std::smatch paramMatch;
+            if (std::regex_search(line, paramMatch, paramComment)) {
+                std::string paramName = paramMatch[1];
+                bool isParamFloat = isFloatVar(paramName);
+                
+                allocateStackSpace(paramName);
+                
+                std::string destReg = getRegisterForVar(paramName, isParamFloat, false);
+                
+                if (isParamFloat) {
+                    if (floatParamIndex < (int)argFloatRegs.size()) {
+                        output.push_back("    mov.s " + destReg + ", " + argFloatRegs[floatParamIndex] + "  # Copy param " + paramName + "\n");
+                        output.push_back("    s.s " + destReg + ", " + std::to_string(variableInfo[paramName].stackOffset) + "($fp)  # Store param " + paramName + " to stack\n");
+                        floatParamIndex++;
                     } else {
-                        if (intParamIndex < argIntRegs.size()) {
-                            output.push_back("    move " + destReg + ", " + argIntRegs[intParamIndex] + "  # Copy param " + paramName + "\n");
-                            output.push_back("    sw " + destReg + ", " + std::to_string(variableInfo[paramName].stackOffset) + "($fp)  # Store param " + paramName + " to stack\n");
-                            intParamIndex++;
-                        } else {
-                            int stackOffset = 8 + (intParamIndex - argIntRegs.size()) * 4;
-                            output.push_back("    lw " + destReg + ", " + std::to_string(stackOffset) + "($fp)  # Load stack param " + paramName + "\n");
-                            output.push_back("    sw " + destReg + ", " + std::to_string(variableInfo[paramName].stackOffset) + "($fp)  # Store param " + paramName + " to local stack\n");
-                            intParamIndex++;
-                        }
+                        int stackOffset = 8 + (floatParamIndex - (int)argFloatRegs.size()) * 4;
+                        output.push_back("    l.s " + destReg + ", " + std::to_string(stackOffset) + "($fp)  # Load stack param " + paramName + "\n");
+                        output.push_back("    s.s " + destReg + ", " + std::to_string(variableInfo[paramName].stackOffset) + "($fp)  # Store param " + paramName + " to local stack\n");
+                        floatParamIndex++;
                     }
-                    markDirty(paramName, destReg);
-                }
-            }
-            return "# " + line + "\n";
-        }
-        
-        if (line.find("BeginFunc") != std::string::npos) {
-            std::regex funcRegex(R"(BeginFunc\s+(\w+))");
-            std::smatch match;
-            if (std::regex_search(line, match, funcRegex)) {
-                currentFunc = match[1];
-                variableInfo.clear();
-                stackOffset = -8; 
-                argStackOffset = 0;
-                intParamIndex = 0;
-                floatParamIndex = 0;
-                paramStack.clear();
-                resetRegisters();
-                
-                output.push_back("\n" + sanitizeName(currentFunc) + ":\n");
-                
-                output.push_back("    addiu $sp, $sp, -8    # Allocate space for ra/fp\n");
-                output.push_back("    sw $ra, 4($sp)        # Save return address\n");
-                output.push_back("    sw $fp, 0($sp)        # Save frame pointer\n");
-                output.push_back("    move $fp, $sp         # Set new frame pointer\n");
-                
-                stackAllocPlaceholderIndex = output.size();
-                output.push_back("    # STACK_ALLOC_PLACEHOLDER\n");
-            }
-            return "";
-        }
-        
-        if (line.find("EndFunc") != std::string::npos) {
-            spillAllDirtyRegisters();
-            
-            output.push_back(sanitizeName(currentFunc) + "_return:\n");
-            
-            // Ensure we allocate enough space for all local variables
-int localStackSize = ((-stackOffset) > 0) ? ((-stackOffset + 7) & ~7) : 16;
-// Force minimum allocation
-if (currentFunc == "main" && localStackSize < 16) {
-    localStackSize = 16;
-}
-            
-            if (stackAllocPlaceholderIndex != -1 && stackAllocPlaceholderIndex < output.size()) {
-                if (localStackSize > 0) {
-                    output[stackAllocPlaceholderIndex] = "    addiu $sp, $sp, -" + std::to_string(localStackSize) + "    # Allocate stack for locals\n";
                 } else {
-                    output[stackAllocPlaceholderIndex] = "    # No local stack needed\n";
+                    if (intParamIndex < (int)argIntRegs.size()) {
+                        output.push_back("    move " + destReg + ", " + argIntRegs[intParamIndex] + "  # Copy param " + paramName + "\n");
+                        output.push_back("    sw " + destReg + ", " + std::to_string(variableInfo[paramName].stackOffset) + "($fp)  # Store param " + paramName + " to stack\n");
+                        intParamIndex++;
+                    } else {
+                        int stackOffset = 8 + (intParamIndex - (int)argIntRegs.size()) * 4;
+                        output.push_back("    lw " + destReg + ", " + std::to_string(stackOffset) + "($fp)  # Load stack param " + paramName + "\n");
+                        output.push_back("    sw " + destReg + ", " + std::to_string(variableInfo[paramName].stackOffset) + "($fp)  # Store param " + paramName + " to local stack\n");
+                        intParamIndex++;
+                    }
                 }
+                markDirty(paramName, destReg);
             }
-            stackAllocPlaceholderIndex = -1; 
-            
-            output.push_back("    # Function epilogue\n");
-            output.push_back("    move $sp, $fp         # Reset $sp to $fp (deallocates locals)\n");
-            output.push_back("    lw $fp, 0($sp)        # Restore frame pointer\n");
-            output.push_back("    lw $ra, 4($sp)        # Restore return address\n");
-            output.push_back("    addiu $sp, $sp, 8     # Deallocate ra/fp space\n");
-
-            if (currentFunc == "main") {
-                output.push_back("    li $v0, 10           # Exit syscall\n");
-                output.push_back("    syscall\n");
-            } else {
-                output.push_back("    jr $ra                # Return to caller\n");
-            }
-            
-            currentFunc = "";
-            return "";
         }
-        
-        if (line.find("param") == 0) {
-            std::regex paramRegex(R"(param\s+(\w+))");
-            std::smatch match;
-            if (std::regex_search(line, match, paramRegex)) {
-                std::string param = match[1];
-                paramStack.push_back(param);
-            }
-            return "# " + line + "\n";
-        }
-
-        std::regex callRegex(R"((\w+)\s*=\s*call\s*(\w+)\s*,\s*(\d+))");
+        return "# " + line + "\n";
+    }
+    
+    if (line.find("BeginFunc") != std::string::npos) {
+        std::regex funcRegex(R"(BeginFunc\s+(\w+))");
         std::smatch match;
-        if (std::regex_search(line, match, callRegex)) {
-            std::string resultVar = match[1];
-            std::string funcName = match[2];
-            int numArgs = std::stoi(match[3]);
+        if (std::regex_search(line, match, funcRegex)) {
+            currentFunc = match[1];
+            variableInfo.clear();
+            stackOffset = -8; 
+            argStackOffset = 0;
+            intParamIndex = 0;
+            floatParamIndex = 0;
+            paramStack.clear();
+            resetRegisters();
             
-            convertFunctionCall(funcName, numArgs, resultVar);
-            return "# " + line + "\n";
+            output.push_back("\n" + sanitizeName(currentFunc) + ":\n");
+            
+            output.push_back("    addiu $sp, $sp, -8    # Allocate space for ra/fp\n");
+            output.push_back("    sw $ra, 4($sp)        # Save return address\n");
+            output.push_back("    sw $fp, 0($sp)        # Save frame pointer\n");
+            output.push_back("    move $fp, $sp         # Set new frame pointer\n");
+            
+            stackAllocPlaceholderIndex = (int)output.size();
+            output.push_back("    # STACK_ALLOC_PLACEHOLDER\n");
         }
+        return "";
+    }
+    
+    if (line.find("EndFunc") != std::string::npos) {
+        spillAllDirtyRegisters();
+        
+        output.push_back(sanitizeName(currentFunc) + "_return:\n");
+        
+        // Ensure we allocate enough space for all local variables
+        int localStackSize = ((-stackOffset) > 0) ? ((-stackOffset + 7) & ~7) : 16;
+        // Force minimum allocation
+        if (currentFunc == "main" && localStackSize < 16) {
+            localStackSize = 16;
+        }
+        
+        if (stackAllocPlaceholderIndex != -1 && stackAllocPlaceholderIndex < (int)output.size()) {
+            if (localStackSize > 0) {
+                output[stackAllocPlaceholderIndex] = "    addiu $sp, $sp, -" + std::to_string(localStackSize) + "    # Allocate stack for locals\n";
+            } else {
+                output[stackAllocPlaceholderIndex] = "    # No local stack needed\n";
+            }
+        }
+        stackAllocPlaceholderIndex = -1; 
+        
+        output.push_back("    # Function epilogue\n");
+        output.push_back("    move $sp, $fp         # Reset $sp to $fp (deallocates locals)\n");
+        output.push_back("    lw $fp, 0($sp)        # Restore frame pointer\n");
+        output.push_back("    lw $ra, 4($sp)        # Restore return address\n");
+        output.push_back("    addiu $sp, $sp, 8     # Deallocate ra/fp space\n");
 
-        std::regex binOpRegex(R"((\w+)\s*=\s*(\w+)\s*(<<|>>|[\+\-\*\/&\|\^])\s*([\w\.-]+)(?:\s*\[(\w+)\])?)");
-        if (std::regex_search(line, match, binOpRegex)) {
-            std::string dest = match[1];
-            std::string left = match[2];
-            std::string op = match[3];
-            std::string right = match[4];
-            std::string type = match[5].str();
-            
-            if (type == "FLOAT") {
+        if (currentFunc == "main") {
+            output.push_back("    li $v0, 10           # Exit syscall\n");
+            output.push_back("    syscall\n");
+        } else {
+            output.push_back("    jr $ra                # Return to caller\n");
+        }
+        
+        currentFunc = "";
+        return "";
+    }
+    
+    if (line.find("param") == 0) {
+        std::regex paramRegex(R"(param\s+(\w+))");
+        std::smatch match;
+        if (std::regex_search(line, match, paramRegex)) {
+            std::string param = match[1];
+            paramStack.push_back(param);
+        }
+        return "# " + line + "\n";
+    }
+
+    // Handle array load operations like "i1 = *t2"
+    std::regex arrayLoadRegex(R"((\w+)\s*=\s*\*(\w+))");
+    std::smatch arrayLoadMatch;
+    if (std::regex_search(line, arrayLoadMatch, arrayLoadRegex)) {
+        std::string dest = arrayLoadMatch[1];
+        std::string ptr = arrayLoadMatch[2];
+        
+        // Get the pointer register
+        std::string ptrReg = getRegisterForVar(ptr, false, true);
+        
+        // Load from the pointer address
+        std::string destReg = getRegisterForVar(dest, false, false);
+        output.push_back("    lw " + destReg + ", 0(" + ptrReg + ")  # Load value from pointer\n");
+        markDirty(dest, destReg);
+        
+        return "# " + line + "\n";
+    }
+
+    // Handle array store operations like "*t4 = 5"  
+    std::regex arrayStoreSimpleRegex(R"(\*(\w+)\s*=\s*([\w\.-]+))");
+    std::smatch arrayStoreSimpleMatch;
+    if (std::regex_search(line, arrayStoreSimpleMatch, arrayStoreSimpleRegex)) {
+        std::string ptr = arrayStoreSimpleMatch[1];
+        std::string value = arrayStoreSimpleMatch[2];
+        
+        // Get the pointer register
+        std::string ptrReg = getRegisterForVar(ptr, false, true);
+        
+        // Store the value
+        if (std::regex_match(value, std::regex(R"(\d+)"))) {
+            output.push_back("    li $t8, " + value + "  # Load immediate value\n");
+            output.push_back("    sw $t8, 0(" + ptrReg + ")  # Store value via pointer\n");
+        } else {
+            std::string valueReg = getRegisterForVar(value, false, true);
+            output.push_back("    sw " + valueReg + ", 0(" + ptrReg + ")  # Store value via pointer\n");
+        }
+        
+        return "# " + line + "\n";
+    }
+
+    // Handle pointer arithmetic patterns like "t2 = &c + t3"
+    std::regex ptrArithmeticRegex(R"((\w+)\s*=\s*&(\w+)\s*\+\s*(\w+))");
+    std::smatch ptrMatch;
+    if (std::regex_search(line, ptrMatch, ptrArithmeticRegex)) {
+        std::string dest = ptrMatch[1];
+        std::string base = ptrMatch[2];
+        std::string offset = ptrMatch[3];
+        
+        std::string baseReg = getRegisterForVar(base, false, true);
+        std::string offsetReg = getRegisterForVar(offset, false, true);
+        std::string destReg = getRegisterForVar(dest, false, false);
+        
+        output.push_back("    add " + destReg + ", " + baseReg + ", " + offsetReg + " # Pointer arithmetic\n");
+        markDirty(dest, destReg);
+        
+        return "# " + line + "\n";
+    }
+
+    // Handle array indexing operations like "i1 = *t2"
+    std::regex arrayIndexRegex(R"((\w+)\s*=\s*\*\(\s*(\w+)\s*\+\s*([^)]+)\s*\))");
+    std::smatch arrayMatch;
+    if (std::regex_search(line, arrayMatch, arrayIndexRegex)) {
+        std::string dest = arrayMatch[1];
+        std::string base = arrayMatch[2];
+        std::string index = arrayMatch[3];
+        
+        output.push_back("    # ARRAY INDEXING: " + dest + " = *(" + base + " + " + index + ")\n");
+        
+        // Get base pointer
+        std::string baseReg = getRegisterForVar(base, false, true);
+        
+        // Calculate offset
+        if (std::regex_match(index, std::regex(R"(\d+)"))) {
+            // Literal offset
+            int offset = std::stoi(index);
+            output.push_back("    addiu $t9, " + baseReg + ", " + std::to_string(offset) + "  # Calculate address\n");
+        } else {
+            // Variable offset - multiply by 4 for word size
+            std::string indexReg = getRegisterForVar(index, false, true);
+            output.push_back("    sll $t8, " + indexReg + ", 2  # Multiply index by 4\n");
+            output.push_back("    add $t9, " + baseReg + ", $t8  # Calculate address\n");
+        }
+        
+        // Load value
+        std::string destReg = getRegisterForVar(dest, false, false);
+        output.push_back("    lw " + destReg + ", 0($t9)  # Load array element\n");
+        markDirty(dest, destReg);
+        
+        return "# " + line + "\n";
+    }
+
+    // Handle array store operations like "*t4 = 5"
+    std::regex arrayStoreRegex(R"(\*\(\s*(\w+)\s*\+\s*([^)]+)\s*\)\s*=\s*([\w\.-]+))");
+    std::smatch arrayStoreMatch;
+    if (std::regex_search(line, arrayStoreMatch, arrayStoreRegex)) {
+        std::string base = arrayStoreMatch[1];
+        std::string index = arrayStoreMatch[2];
+        std::string value = arrayStoreMatch[3];
+        
+        output.push_back("    # ARRAY STORE: *(" + base + " + " + index + ") = " + value + "\n");
+        
+        // Get base pointer
+        std::string baseReg = getRegisterForVar(base, false, true);
+        
+        // Calculate offset
+        if (std::regex_match(index, std::regex(R"(\d+)"))) {
+            int offset = std::stoi(index);
+            output.push_back("    addiu $t9, " + baseReg + ", " + std::to_string(offset) + "  # Calculate address\n");
+        } else {
+            std::string indexReg = getRegisterForVar(index, false, true);
+            output.push_back("    sll $t8, " + indexReg + ", 2  # Multiply index by 4\n");
+            output.push_back("    add $t9, " + baseReg + ", $t8  # Calculate address\n");
+        }
+        
+        // Store value
+        if (std::regex_match(value, std::regex(R"(\d+)"))) {
+            output.push_back("    li $t8, " + value + "  # Load immediate value\n");
+            output.push_back("    sw $t8, 0($t9)  # Store array element\n");
+        } else {
+            std::string valueReg = getRegisterForVar(value, false, true);
+            output.push_back("    sw " + valueReg + ", 0($t9)  # Store array element\n");
+        }
+        
+        return "# " + line + "\n";
+    }
+
+    std::regex callRegex(R"((\w+)\s*=\s*call\s*(\w+)\s*,\s*(\d+))");
+    std::smatch match;
+    if (std::regex_search(line, match, callRegex)) {
+        std::string resultVar = match[1];
+        std::string funcName = match[2];
+        int numArgs = std::stoi(match[3]);
+        
+        convertFunctionCall(funcName, numArgs, resultVar);
+        return "# " + line + "\n";
+    }
+
+    std::regex binOpRegex(R"((\w+)\s*=\s*(\w+)\s*(<<|>>|[\+\-\*\/&\|\^])\s*([\w\.-]+)(?:\s*\[(\w+)\])?)");
+    if (std::regex_search(line, match, binOpRegex)) {
+        std::string dest = match[1];
+        std::string left = match[2];
+        std::string op = match[3];
+        std::string right = match[4];
+        std::string type = match[5].str();
+        
+        if (type == "FLOAT") {
+            convertFloatOperation(dest, left, op, right);
+        } else if (type == "INT") {
+            convertIntOperation(dest, left, op, right);
+        } else {
+            if (isFloatVar(left) || isFloatVar(right) || std::regex_match(left, std::regex(R"(-?\d+\.\d+)")) || std::regex_match(right, std::regex(R"(-?\d+\.\d+)"))) {
+                output.push_back("    # Inferred type as FLOAT from operands\n");
                 convertFloatOperation(dest, left, op, right);
-            } else if (type == "INT") {
+            } else { 
+                output.push_back("    # Inferred type as INT from operands\n");
                 convertIntOperation(dest, left, op, right);
-            } else {
-                if (isFloatVar(left) || isFloatVar(right) || std::regex_match(left, std::regex(R"(-?\d+\.\d+)")) || std::regex_match(right, std::regex(R"(-?\d+\.\d+)"))) {
-                    output.push_back("    # Inferred type as FLOAT from operands\n");
-                    convertFloatOperation(dest, left, op, right);
-                } else { 
-                    output.push_back("    # Inferred type as INT from operands\n");
-                    convertIntOperation(dest, left, op, right);
-                }
             }
-            return "# " + line + "\n";
         }
+        return "# " + line + "\n";
+    }
+    
+    std::regex cmpRegex(R"((\w+)\s*=\s*([\w\.-]+)\s*([><=!]+)\s*([\w\.-]+)\s*\[(\w+)\])");
+    if (std::regex_search(line, match, cmpRegex)) {
+        std::string dest = match[1];
+        std::string left = match[2];
+        std::string op = match[3];
+        std::string right = match[4];
+        std::string type = match[5];
         
-        std::regex cmpRegex(R"((\w+)\s*=\s*([\w\.-]+)\s*([><=!]+)\s*([\w\.-]+)\s*\[(\w+)\])");
-        if (std::regex_search(line, match, cmpRegex)) {
-            std::string dest = match[1];
-            std::string left = match[2];
-            std::string op = match[3];
-            std::string right = match[4];
-            std::string type = match[5];
-            
-            if (type == "FLOAT" || isFloatVar(left) || isFloatVar(right) || std::regex_match(left, std::regex(R"(-?\d+\.\d+)")) || std::regex_match(right, std::regex(R"(-?\d+\.\d+)"))) {
-                convertFloatComparison(dest, left, op, right);
-            } else {
-                convertIntComparison(dest, left, op, right);
-            }
-            return "# " + line + "\n";
+        if (type == "FLOAT" || isFloatVar(left) || isFloatVar(right) || std::regex_match(left, std::regex(R"(-?\d+\.\d+)")) || std::regex_match(right, std::regex(R"(-?\d+\.\d+)"))) {
+            convertFloatComparison(dest, left, op, right);
+        } else {
+            convertIntComparison(dest, left, op, right);
         }
-        
-        std::regex simpleAssign(R"((\w+)\s*=\s*([^;\[\+\-\*\/><=!]+)(?:\s*\[([^\]]+)\])?)");
-        
-        if (std::regex_search(line, match, simpleAssign)) {
+        return "# " + line + "\n";
+    }
+    
+    std::regex simpleAssign(R"((\w+)\s*=\s*([^;\[\+\-\*\/><=!]+)(?:\s*\[([^\]]+)\])?)");
+    
+    if (std::regex_search(line, match, simpleAssign)) {
 
-            if (currentFunc.empty()) {
-                std::string dest = match[1];
-                std::string src = match[2];
-                src = std::regex_replace(src, std::regex(R"(\s*$)"), "");
-                globalInitialValues[dest] = src;
-                if (src.find("\"") != std::string::npos) {
-                    getStringConstant(src);
-                } else if (std::regex_match(src, std::regex(R"(-?\d+\.\d+)"))) {
-                    getFloatConstant(src);
-                }
-                return "# " + line + " (Global assignment - storing for .data)\n";
-            }
-            
+        if (currentFunc.empty()) {
             std::string dest = match[1];
             std::string src = match[2];
-            std::string type = match[3];
-            
             src = std::regex_replace(src, std::regex(R"(\s*$)"), "");
+            globalInitialValues[dest] = src;
+            if (src.find("\"") != std::string::npos) {
+                getStringConstant(src);
+            } else if (std::regex_match(src, std::regex(R"(-?\d+\.\d+)"))) {
+                getFloatConstant(src);
+            }
+            return "# " + line + " (Global assignment - storing for .data)\n";
+        }
+        
+        std::string dest = match[1];
+        std::string src = match[2];
+        std::string type = match[3];
+        
+        src = std::regex_replace(src, std::regex(R"(\s*$)"), "");
 
-            // Handle &var (address-of)
-            if (src.rfind("&", 0) == 0) {
-                std::string varName = src.substr(1);
-                std::string destReg = getRegisterForVar(dest, false, false); 
-
-                if (varName.front() == '"') {
-                    std::string label = getStringConstant(varName);
-                    output.push_back("    la " + destReg + ", " + label + "  # " + line);
-                    globalInitialValues[dest] = varName; 
-                }
-                else if (globalVars.count(varName)) {
-                    output.push_back("    la " + destReg + ", " + sanitizeName(varName) + "  # " + line);
-                }
-                else {
-                    // orce allocation
-                    allocateStackSpace(varName);
-                    
-                    // Spill if dirty
-                    if (variableInfo.find(varName) != variableInfo.end() && variableInfo[varName].dirty) {
-                        for(const auto& reg : variableInfo[varName].registers) {
-                            output.push_back("    # Storing " + varName + " before taking address (for scanf)\n");
-                            spillVariable(reg, varName); // This also clears dirty flag
-                            break; // Only need to spill once
-                        }
-                    }
-                    // Invalidate all registers holding varName
-                    if (variableInfo.find(varName) != variableInfo.end()) {
-                         output.push_back("    # Invalidating registers for " + varName + "\n");
-                        for(const auto& reg : variableInfo[varName].registers) {
-                            (variableInfo[varName].isFloat ? floatRegisters : intRegisters)[reg].varNames.erase(varName);
-                        }
-                        variableInfo[varName].registers.clear();
-                    }
-
-                    int offset = variableInfo[varName].stackOffset;
-                    output.push_back("    addiu " + destReg + ", $fp, " + std::to_string(offset) + " # " + line);
-                }
-
-                markDirty(dest, destReg);
-                if (variableInfo.find(dest) == variableInfo.end()) {
-                    // Initialize with default values, setting pointsTo
-                    variableInfo[dest] = {{destReg}, -1, true, false, false, varName};
+        // Handle &var (address-of)
+        if (src.rfind("&", 0) == 0) {
+            // Check if this is array element address (&array[index])
+            std::regex arrayAddrRegex(R"(&(\w+)\s*\[\s*(\w+)\s*\])");
+            std::smatch addrMatch;
+            if (std::regex_search(src, addrMatch, arrayAddrRegex)) {
+                std::string arrayName = addrMatch[1];
+                std::string index = addrMatch[2];
+                
+                std::string arrayReg = getRegisterForVar(arrayName, false, true);
+                std::string destReg = getRegisterForVar(dest, false, false);
+                
+                if (std::regex_match(index, std::regex(R"(\d+)"))) {
+                    // Literal index
+                    int offset = std::stoi(index) * 4;
+                    output.push_back("    addiu " + destReg + ", " + arrayReg + ", " + std::to_string(offset) + " # &" + arrayName + "[" + index + "]\n");
                 } else {
-                    variableInfo[dest].pointsTo = varName;
+                    // Variable index
+                    std::string indexReg = getRegisterForVar(index, false, true);
+                    output.push_back("    sll $t8, " + indexReg + ", 2  # Multiply index by 4\n");
+                    output.push_back("    add " + destReg + ", " + arrayReg + ", $t8  # &" + arrayName + "[" + index + "]\n");
                 }
+                
+                markDirty(dest, destReg);
                 return "# " + line + "\n";
             }
             
-            if (!type.empty()) {
-                varTypes[dest] = type;
+            std::string varName = src.substr(1);
+            std::string destReg = getRegisterForVar(dest, false, false); 
+
+            if (varName.front() == '"') {
+                std::string label = getStringConstant(varName);
+                output.push_back("    la " + destReg + ", " + label + "  # " + line);
+                globalInitialValues[dest] = varName; 
             }
+            else if (globalVars.count(varName)) {
+                output.push_back("    la " + destReg + ", " + sanitizeName(varName) + "  # " + line);
+            }
+            else {
+                // orce allocation
+                allocateStackSpace(varName);
+                
+                // Spill if dirty
+                if (variableInfo.find(varName) != variableInfo.end() && variableInfo[varName].dirty) {
+                    for(const auto& reg : variableInfo[varName].registers) {
+                        output.push_back("    # Storing " + varName + " before taking address (for scanf)\n");
+                        spillVariable(reg, varName); // This also clears dirty flag
+                        break; // Only need to spill once
+                    }
+                }
+                // Invalidate all registers holding varName
+                if (variableInfo.find(varName) != variableInfo.end()) {
+                     output.push_back("    # Invalidating registers for " + varName + "\n");
+                    for(const auto& reg : variableInfo[varName].registers) {
+                        (variableInfo[varName].isFloat ? floatRegisters : intRegisters)[reg].varNames.erase(varName);
+                    }
+                    variableInfo[varName].registers.clear();
+                }
+
+                int offset = variableInfo[varName].stackOffset;
+                output.push_back("    addiu " + destReg + ", $fp, " + std::to_string(offset) + " # " + line);
+            }
+
+            markDirty(dest, destReg);
+            if (variableInfo.find(dest) == variableInfo.end()) {
+                // Initialize with default values, setting pointsTo
+                variableInfo[dest] = VariableInfo({destReg}, -1, true, false, false, varName);
+            } else {
+                variableInfo[dest].pointsTo = varName;
+            }
+            return "# " + line + "\n";
+        }
+        
+        if (!type.empty()) {
+            varTypes[dest] = type;
+        }
+        
+        bool isDestFloat = isFloatVar(dest);
+        
+        // Check for literals first
+        
+        // Case 1: Source is a float literal
+        if (std::regex_match(src, std::regex(R"(-?\d+\.\d+)"))) {
+            std::string destReg = getRegisterForVar(dest, isDestFloat, false);
+            std::string floatLabel = getFloatConstant(src);
+            if (isDestFloat) {
+                output.push_back("    l.s " + destReg + ", " + floatLabel + " # " + dest + " = " + src + "\n");
+            } else {
+                std::string tempFloatReg = "$f31"; 
+                output.push_back("    l.s " + tempFloatReg + ", " + floatLabel + "\n");
+                output.push_back("    trunc.w.s " + tempFloatReg + ", " + tempFloatReg + "\n");
+                output.push_back("    mfc1 " + destReg + ", " + tempFloatReg + " # " + dest + " = (int)" + src + "\n");
+            }
+            markDirty(dest, destReg);
+        } 
+        // Case 2: Source is an integer literal
+        else if (std::regex_match(src, std::regex(R"(-?\d+)"))) {
+            std::string destReg = getRegisterForVar(dest, isDestFloat, false);
+            if (isDestFloat) {
+                std::string tempIntReg = "$v1";
+                output.push_back("    li " + tempIntReg + ", " + src + "\n");
+                output.push_back("    mtc1 " + tempIntReg + ", " + destReg + " # " + dest + " = " + src + ".0\n");
+                output.push_back("    cvt.s.w " + destReg + ", " + destReg + "\n");
+            } else {
+                output.push_back("    li " + destReg + ", " + src + " # " + dest + " = " + src + "\n");
+            }
+            markDirty(dest, destReg);
+        } 
+        // Case 3: Source is a character literal
+        else if (src.find("'") == 0 && src.length() == 3) {
+            std::string destReg = getRegisterForVar(dest, isDestFloat, false);
+            char c = src[1];
+            if (isDestFloat) {
+                std::string tempIntReg = "$v1";
+                output.push_back("    li " + tempIntReg + ", " + std::to_string((int)c) + "\n");
+                output.push_back("    mtc1 " + tempIntReg + ", " + destReg + " # " + dest + " = (float)'" + c + "'\n");
+                output.push_back("    cvt.s.w " + destReg + ", " + destReg + "\n");
+            } else {
+                output.push_back("    li " + destReg + ", " + std::to_string((int)c) + " # " + dest + " = '" + std::string(1, c) + "'\n");
+            }
+            markDirty(dest, destReg);
+        } 
+        // Case 4: Source is a string literal
+        else if (src.find("\"") == 0) {
+            std::string destReg = getRegisterForVar(dest, isDestFloat, false);
+            std::string stringLabel = getStringConstant(src);
+            globalInitialValues[dest] = src;
+            if (isDestFloat) {
+                output.push_back("    # WARNING: Assigning string address to float var\n");
+                output.push_back("    la " + destReg + ", " + stringLabel + " # " + dest + " = &\"...\"\n");
+            } else {
+                output.push_back("    la " + destReg + ", " + stringLabel + " # " + dest + " = &\"...\"\n");
+            }
+            markDirty(dest, destReg);
+        } 
+        // Case 5: Source is a VARIABLE
+        else {
+            bool isSrcFloat = isFloatVar(src);
             
-            bool isDestFloat = isFloatVar(dest);
-            
-            // Check for literals first
-            
-            // Case 1: Source is a float literal
-            if (std::regex_match(src, std::regex(R"(-?\d+\.\d+)"))) {
+            if (isDestFloat == isSrcFloat) {
+                // Get source register (load the value)
+                std::string srcReg = getRegisterForVar(src, isSrcFloat, true);
+                // Get destination register (don't load old value)
                 std::string destReg = getRegisterForVar(dest, isDestFloat, false);
-                std::string floatLabel = getFloatConstant(src);
+                
                 if (isDestFloat) {
-                    output.push_back("    l.s " + destReg + ", " + floatLabel + " # " + dest + " = " + src + "\n");
+                    output.push_back("    mov.s " + destReg + ", " + srcReg + " # " + dest + " = " + src + "\n");
                 } else {
-                    std::string tempFloatReg = "$f31"; 
-                    output.push_back("    l.s " + tempFloatReg + ", " + floatLabel + "\n");
+                    output.push_back("    move " + destReg + ", " + srcReg + " # " + dest + " = " + src + "\n");
+                }
+                markDirty(dest, destReg);
+            } else {
+                // Handle typecasting as before
+                std::string srcReg = getRegisterForVar(src, isSrcFloat, true);
+                std::string destReg = getRegisterForVar(dest, isDestFloat, false);
+
+                if (isDestFloat && !isSrcFloat) {
+                    // float_dest = int_var
+                    output.push_back("    mtc1 " + srcReg + ", " + destReg + " # " + dest + " = (float)" + src + "\n");
+                    output.push_back("    cvt.s.w " + destReg + ", " + destReg + "\n");
+                } else if (!isDestFloat && isSrcFloat) {
+                    // int_dest = float_var
+                    std::string tempFloatReg = srcReg;
                     output.push_back("    trunc.w.s " + tempFloatReg + ", " + tempFloatReg + "\n");
                     output.push_back("    mfc1 " + destReg + ", " + tempFloatReg + " # " + dest + " = (int)" + src + "\n");
                 }
                 markDirty(dest, destReg);
-            } 
-            // Case 2: Source is an integer literal
-            else if (std::regex_match(src, std::regex(R"(-?\d+)"))) {
-                std::string destReg = getRegisterForVar(dest, isDestFloat, false);
-                if (isDestFloat) {
-                    std::string tempIntReg = "$v1";
-                    output.push_back("    li " + tempIntReg + ", " + src + "\n");
-                    output.push_back("    mtc1 " + tempIntReg + ", " + destReg + " # " + dest + " = " + src + ".0\n");
-                    output.push_back("    cvt.s.w " + destReg + ", " + destReg + "\n");
-                } else {
-                    output.push_back("    li " + destReg + ", " + src + " # " + dest + " = " + src + "\n");
-                }
-                markDirty(dest, destReg);
-            } 
-            // Case 3: Source is a character literal
-            else if (src.find("'") == 0 && src.length() == 3) {
-                std::string destReg = getRegisterForVar(dest, isDestFloat, false);
-                char c = src[1];
-                if (isDestFloat) {
-                    std::string tempIntReg = "$v1";
-                    output.push_back("    li " + tempIntReg + ", " + std::to_string((int)c) + "\n");
-                    output.push_back("    mtc1 " + tempIntReg + ", " + destReg + " # " + dest + " = (float)'" + c + "'\n");
-                    output.push_back("    cvt.s.w " + destReg + ", " + destReg + "\n");
-                } else {
-                    output.push_back("    li " + destReg + ", " + std::to_string((int)c) + " # " + dest + " = '" + std::string(1, c) + "'\n");
-                }
-                markDirty(dest, destReg);
-            } 
-            // Case 4: Source is a string literal
-            else if (src.find("\"") == 0) {
-                std::string destReg = getRegisterForVar(dest, isDestFloat, false);
-                std::string stringLabel = getStringConstant(src);
-                globalInitialValues[dest] = src;
-                if (isDestFloat) {
-                    output.push_back("    # WARNING: Assigning string address to float var\n");
-                    output.push_back("    la " + destReg + ", " + stringLabel + " # " + dest + " = &\"...\"\n");
-                } else {
-                    output.push_back("    la " + destReg + ", " + stringLabel + " # " + dest + " = &\"...\"\n");
-                }
-                markDirty(dest, destReg);
-            } 
-            // Case 5: Source is a VARIABLE
-            else {
-                bool isSrcFloat = isFloatVar(src);
-                
-                if (isDestFloat == isSrcFloat) {
-                    // Get source register (load the value)
-                    std::string srcReg = getRegisterForVar(src, isSrcFloat, true);
-                    // Get destination register (don't load old value)
-                    std::string destReg = getRegisterForVar(dest, isDestFloat, false);
-                    
-                    if (isDestFloat) {
-                        output.push_back("    mov.s " + destReg + ", " + srcReg + " # " + dest + " = " + src + "\n");
-                    } else {
-                        output.push_back("    move " + destReg + ", " + srcReg + " # " + dest + " = " + src + "\n");
-                    }
-                    markDirty(dest, destReg);
-                } else {
-                    // Handle typecasting as before
-                    std::string srcReg = getRegisterForVar(src, isSrcFloat, true);
-                    std::string destReg = getRegisterForVar(dest, isDestFloat, false);
-
-                    if (isDestFloat && !isSrcFloat) {
-                        // float_dest = int_var
-                        output.push_back("    mtc1 " + srcReg + ", " + destReg + " # " + dest + " = (float)" + src + "\n");
-                        output.push_back("    cvt.s.w " + destReg + ", " + destReg + "\n");
-                    } else if (!isDestFloat && isSrcFloat) {
-                        // int_dest = float_var
-                        std::string tempFloatReg = srcReg;
-                        output.push_back("    trunc.w.s " + tempFloatReg + ", " + tempFloatReg + "\n");
-                        output.push_back("    mfc1 " + destReg + ", " + tempFloatReg + " # " + dest + " = (int)" + src + "\n");
-                    }
-                    markDirty(dest, destReg);
-                }
             }
-            return "# " + line + "\n";
         }
+        return "# " + line + "\n";
+    }
+    
+    // Conditional jumps
+    std::regex condRegex(R"(ifFalse\s*(\w+)\s*goto\s*(\w+))");
+    if (std::regex_search(line, match, condRegex)) {
+        std::string condition = match[1];
+        std::string label = match[2];
+        std::string condReg = getRegisterForVar(condition, false, true);
+        output.push_back("    beq " + condReg + ", $zero, " + sanitizeName(label) + " # ifFalse " + condition + "\n");
+        return "# " + line + "\n";
+    }
+    
+    std::regex condTrueRegex(R"(if\s*(\w+)\s*goto\s*(\w+))");
+    if (std::regex_search(line, match, condTrueRegex)) {
+        std::string condition = match[1];
+        std::string label = match[2];
+        std::string condReg = getRegisterForVar(condition, false, true);
+        output.push_back("    bne " + condReg + ", $zero, " + sanitizeName(label) + " # if " + condition + "\n");
+        return "# " + line + "\n";
+    }
+    
+    // Unconditional jumps
+    if (line.find("goto") == 0) {
+        std::regex gotoRegex(R"(goto\s*(\w+))");
+        std::smatch match;
+        if (std::regex_search(line, match, gotoRegex)) {
+            std::string label = match[1];
+            spillAllDirtyRegisters(); // Spill before all jumps
+            output.push_back("    j " + sanitizeName(label) + "\n");
+        }
+        return "# " + line + "\n";
+    }
+    
+    // Labels
+    if (std::regex_match(line, std::regex(R"(\w+:)"))) {
+        spillAllDirtyRegisters();
+        std::string label = line.substr(0, line.length() - 1);
+        output.push_back(sanitizeName(label) + ":\n");
+        return "# " + line + " (Label)\n"; 
+    }
+    
+    // Return statement
+    std::regex returnRegex(R"(return\s+(.+))");
+    if (std::regex_search(line, match, returnRegex)) {
+        std::string returnValue = match[1];
         
-        // Conditional jumps
-        std::regex condRegex(R"(ifFalse\s*(\w+)\s*goto\s*(\w+))");
-        if (std::regex_search(line, match, condRegex)) {
-            std::string condition = match[1];
-            std::string label = match[2];
-            std::string condReg = getRegisterForVar(condition, false, true);
-            output.push_back("    beq " + condReg + ", $zero, " + sanitizeName(label) + " # ifFalse " + condition + "\n");
-            return "# " + line + "\n";
+        if (std::regex_match(returnValue, std::regex(R"(-?\d+)"))) {
+            output.push_back("    li $v0, " + returnValue + " # Return value\n");
+        } 
+        else if (std::regex_match(returnValue, std::regex(R"(-?\d+\.\d+)"))) {
+            std::string floatLabel = getFloatConstant(returnValue);
+            output.push_back("    l.s $f0, " + floatLabel + " # Return value\n");
+        } 
+        else if (returnValue.find("'") == 0 && returnValue.length() == 3) {
+             char c = returnValue[1];
+             output.push_back("    li $v0, " + std::to_string((int)c) + " # Return value '" + c + "'\n");
         }
-        
-        std::regex condTrueRegex(R"(if\s*(\w+)\s*goto\s*(\w+))");
-        if (std::regex_search(line, match, condTrueRegex)) {
-            std::string condition = match[1];
-            std::string label = match[2];
-            std::string condReg = getRegisterForVar(condition, false, true);
-            output.push_back("    bne " + condReg + ", $zero, " + sanitizeName(label) + " # if " + condition + "\n");
-            return "# " + line + "\n";
-        }
-        
-        // Unconditional jumps
-        if (line.find("goto") == 0) {
-            std::regex gotoRegex(R"(goto\s*(\w+))");
-            std::smatch match;
-            if (std::regex_search(line, match, gotoRegex)) {
-                std::string label = match[1];
-                spillAllDirtyRegisters(); // Spill before all jumps
-                output.push_back("    j " + sanitizeName(label) + "\n");
-            }
-            return "# " + line + "\n";
-        }
-        
-        // Labels
-        if (std::regex_match(line, std::regex(R"(\w+:)"))) {
-            spillAllDirtyRegisters();
-            std::string label = line.substr(0, line.length() - 1);
-            output.push_back(sanitizeName(label) + ":\n");
-            return "# " + line + " (Label)\n"; 
-        }
-        
-        // Return statement
-        std::regex returnRegex(R"(return\s+(.+))");
-        if (std::regex_search(line, match, returnRegex)) {
-            std::string returnValue = match[1];
-            
-            if (std::regex_match(returnValue, std::regex(R"(-?\d+)"))) {
-                output.push_back("    li $v0, " + returnValue + " # Return value\n");
-            } 
-            else if (std::regex_match(returnValue, std::regex(R"(-?\d+\.\d+)"))) {
-                std::string floatLabel = getFloatConstant(returnValue);
-                output.push_back("    l.s $f0, " + floatLabel + " # Return value\n");
-            } 
-            else if (returnValue.find("'") == 0 && returnValue.length() == 3) {
-                 char c = returnValue[1];
-                 output.push_back("    li $v0, " + std::to_string((int)c) + " # Return value '" + c + "'\n");
-            }
-            else {
-                bool isFloat = isFloatVar(returnValue);
-                std::string reg = getRegisterForVar(returnValue, isFloat, true);
-                if (isFloat) {
-                    output.push_back("    mov.s $f0, " + reg + " # Return value " + returnValue + "\n");
-                } else {
-                    output.push_back("    move $v0, " + reg + " # Return value " + returnValue + "\n");
-                }
-            }
-            
-            spillAllDirtyRegisters();
-            output.push_back("    j " + sanitizeName(currentFunc) + "_return # Jump to epilogue\n");
-            return "# " + line + "\n";
-        }
-        
-        // Return without value
-        if (line.find("return") == 0) {
-            spillAllDirtyRegisters();
-            output.push_back("    j " + sanitizeName(currentFunc) + "_return # Jump to epilogue\n");
-            return "# " + line + "\n";
-        }
-
-        // Store
-        std::regex storeRegex(R"(\*(\w+)\s*=\s*([\w\.-]+)\s*\[(\w+)\])");
-        if (std::regex_search(line, match, storeRegex)) {
-            std::string ptr = match[1];
-            std::string src = match[2];
-            std::string type = match[3];
-            
-            std::string ptrReg = getRegisterForVar(ptr, false, true);
-            
-            if (type == "FLOAT") {
-                std::string srcReg = getRegisterForVar(src, true, true);
-                output.push_back("    s.s " + srcReg + ", 0(" + ptrReg + ")  # *" + ptr + " = " + src + "\n");
+        else {
+            bool isFloat = isFloatVar(returnValue);
+            std::string reg = getRegisterForVar(returnValue, isFloat, true);
+            if (isFloat) {
+                output.push_back("    mov.s $f0, " + reg + " # Return value " + returnValue + "\n");
             } else {
-                std::string srcReg = getRegisterForVar(src, false, true);
-                output.push_back("    sw " + srcReg + ", 0(" + ptrReg + ")  # *" + ptr + " = " + src + "\n");
+                output.push_back("    move $v0, " + reg + " # Return value " + returnValue + "\n");
             }
-            return "# " + line + "\n";
         }
-
-std::regex loadSimpleRegex(R"((\w+)\s*=\s*\*(\w+))");
-if (std::regex_search(line, match, loadSimpleRegex)) {
-    std::string dest = match[1];
-    std::string ptr = match[2];
-    
-    output.push_back("    # LOAD OPERATION: " + dest + " = *" + ptr + "\n");
-    
-    // Infer type from the pointer variable
-    bool isFloat = isFloatVar(ptr);
-    
-    // Load the pointer value (address) into a register
-    std::string ptrReg = getRegisterForVar(ptr, false, true); // loadValue = true
-    
-    output.push_back("    # Pointer " + ptr + " contains address in register " + ptrReg + "\n");
-    
-    if (isFloat) {
-        std::string destReg = getRegisterForVar(dest, true, false); // loadValue = false
-        output.push_back("    l.s " + destReg + ", 0(" + ptrReg + ")  # " + dest + " = *" + ptr + " (float)\n");
-        markDirty(dest, destReg);
-    } else {
-        std::string destReg = getRegisterForVar(dest, false, false); // loadValue = false
-        output.push_back("    lw " + destReg + ", 0(" + ptrReg + ")  # " + dest + " = *" + ptr + " (int)\n");
-        markDirty(dest, destReg);
-    }
-    return "# " + line + "\n";
-}
-std::regex loadRegex(R"((\w+)\s*=\s*\*(\w+)\s*\[(\w+)\])");
-if (std::regex_search(line, match, loadRegex)) {
-    std::string dest = match[1];
-    std::string ptr = match[2];
-    std::string type = match[3];
-
-    output.push_back("    # LOAD OPERATION: " + dest + " = *" + ptr + " [" + type + "]\n");
-    
-    std::string ptrReg = getRegisterForVar(ptr, false, true); // loadValue = true
-    
-    output.push_back("    # Pointer " + ptr + " contains address in register " + ptrReg + "\n");
-    
-    if (type == "FLOAT") {
-        std::string destReg = getRegisterForVar(dest, true, false); // loadValue = false
-        output.push_back("    l.s " + destReg + ", 0(" + ptrReg + ")  # " + dest + " = *" + ptr + " (float)\n");
-        markDirty(dest, destReg);
-    } else {
-        std::string destReg = getRegisterForVar(dest, false, false); // loadValue = false
-        output.push_back("    lw " + destReg + ", 0(" + ptrReg + ")  # " + dest + " = *" + ptr + " (int)\n");
-        markDirty(dest, destReg);
-    }
-    return "# " + line + "\n";
-}
         
-        return "# UNHANDLED: " + line + "\n";
+        spillAllDirtyRegisters();
+        output.push_back("    j " + sanitizeName(currentFunc) + "_return # Jump to epilogue\n");
+        return "# " + line + "\n";
     }
+    
+    // Return without value
+    if (line.find("return") == 0) {
+        spillAllDirtyRegisters();
+        output.push_back("    j " + sanitizeName(currentFunc) + "_return # Jump to epilogue\n");
+        return "# " + line + "\n";
+    }
+
+    // Store
+    std::regex storeRegex(R"(\*(\w+)\s*=\s*([\w\.-]+)\s*\[(\w+)\])");
+    if (std::regex_search(line, match, storeRegex)) {
+        std::string ptr = match[1];
+        std::string src = match[2];
+        std::string type = match[3];
+        
+        std::string ptrReg = getRegisterForVar(ptr, false, true);
+        
+        if (type == "FLOAT") {
+            std::string srcReg = getRegisterForVar(src, true, true);
+            output.push_back("    s.s " + srcReg + ", 0(" + ptrReg + ")  # *" + ptr + " = " + src + "\n");
+        } else {
+            std::string srcReg = getRegisterForVar(src, false, true);
+            output.push_back("    sw " + srcReg + ", 0(" + ptrReg + ")  # *" + ptr + " = " + src + "\n");
+        }
+        return "# " + line + "\n";
+    }
+
+    std::regex loadSimpleRegex(R"((\w+)\s*=\s*\*(\w+))");
+    if (std::regex_search(line, match, loadSimpleRegex)) {
+        std::string dest = match[1];
+        std::string ptr = match[2];
+        
+        output.push_back("    # LOAD OPERATION: " + dest + " = *" + ptr + "\n");
+        
+        // Infer type from the pointer variable
+        bool isFloat = isFloatVar(ptr);
+        
+        // Load the pointer value (address) into a register
+        std::string ptrReg = getRegisterForVar(ptr, false, true); // loadValue = true
+        
+        output.push_back("    # Pointer " + ptr + " contains address in register " + ptrReg + "\n");
+        
+        if (isFloat) {
+            std::string destReg = getRegisterForVar(dest, true, false); // loadValue = false
+            output.push_back("    l.s " + destReg + ", 0(" + ptrReg + ")  # " + dest + " = *" + ptr + " (float)\n");
+            markDirty(dest, destReg);
+        } else {
+            std::string destReg = getRegisterForVar(dest, false, false); // loadValue = false
+            output.push_back("    lw " + destReg + ", 0(" + ptrReg + ")  # " + dest + " = *" + ptr + " (int)\n");
+            markDirty(dest, destReg);
+        }
+        return "# " + line + "\n";
+    }
+    
+    std::regex loadRegex(R"((\w+)\s*=\s*\*(\w+)\s*\[(\w+)\])");
+    if (std::regex_search(line, match, loadRegex)) {
+        std::string dest = match[1];
+        std::string ptr = match[2];
+        std::string type = match[3];
+
+        output.push_back("    # LOAD OPERATION: " + dest + " = *" + ptr + " [" + type + "]\n");
+        
+        std::string ptrReg = getRegisterForVar(ptr, false, true); // loadValue = true
+        
+        output.push_back("    # Pointer " + ptr + " contains address in register " + ptrReg + "\n");
+        
+        if (type == "FLOAT") {
+            std::string destReg = getRegisterForVar(dest, true, false); // loadValue = false
+            output.push_back("    l.s " + destReg + ", 0(" + ptrReg + ")  # " + dest + " = *" + ptr + " (float)\n");
+            markDirty(dest, destReg);
+        } else {
+            std::string destReg = getRegisterForVar(dest, false, false); // loadValue = false
+            output.push_back("    lw " + destReg + ", 0(" + ptrReg + ")  # " + dest + " = *" + ptr + " (int)\n");
+            markDirty(dest, destReg);
+        }
+        return "# " + line + "\n";
+    }
+    
+    return "# UNHANDLED: " + line + "\n";
+}
 
     void convertIntOperation(const std::string& dest, const std::string& left, const std::string& op, const std::string& right) {
     bool isFloat = false;
@@ -1337,9 +1507,9 @@ if (std::regex_search(line, match, loadRegex)) {
                 bool isFloat = isFloatVar(arg);
                 std::string argReg = getRegisterForVar(arg, isFloat, true);
 
-                if (isFloat && floatArgCount < argFloatRegs.size()) {
+                if (isFloat && floatArgCount < (int)argFloatRegs.size()) {
                     output.push_back("    mov.s " + argFloatRegs[floatArgCount++] + ", " + argReg + "  # Float argument " + std::to_string(i+1) + "\n");
-                } else if (!isFloat && intArgCount < argIntRegs.size()) {
+                } else if (!isFloat && intArgCount < (int)argIntRegs.size()) {
                     output.push_back("    move " + argIntRegs[intArgCount++] + ", " + argReg + "  # Integer argument " + std::to_string(i+1) + "\n");
                 } else {
                     // Argument goes on the stack
@@ -1364,7 +1534,7 @@ if (std::regex_search(line, match, loadRegex)) {
         }
 
         // Restore saved registers
-        for (int i = regsToSave.size() - 1; i >= 0; i--) {
+        for (int i = (int)regsToSave.size() - 1; i >= 0; i--) {
             output.push_back("    lw " + regsToSave[i] + ", 0($sp)\n");
             output.push_back("    addiu $sp, $sp, 4\n");
         }
@@ -1416,9 +1586,9 @@ if (std::regex_search(line, match, loadRegex)) {
     }
 
     int varIndex = 0;
-    int lastIndex = 0;
+    size_t lastIndex = 0;
 
-    for (int i = 0; i < actualFormatString.length(); ++i) {
+    for (size_t i = 0; i < actualFormatString.length(); ++i) {
         if (actualFormatString[i] == '%') {
             // Print any literal chunk that came before '%'
             if (i > lastIndex) {
@@ -1442,7 +1612,7 @@ if (std::regex_search(line, match, loadRegex)) {
                     output.push_back("    syscall\n");
                     i++; // Skip the second %
                 } 
-                else if (varIndex < printfVars.size()) {
+                else if (varIndex < (int)printfVars.size()) {
                     std::string varName = printfVars[varIndex];
                     varIndex++;
 
@@ -1593,7 +1763,7 @@ if (std::regex_search(line, match, loadRegex)) {
 
     // Parse variables according to format string specifiers
     int addrIndex = 0;
-    for (size_t i = 0; i < actualFormatString.length() && addrIndex < addressVars.size(); i++) {
+    for (size_t i = 0; i < actualFormatString.length() && addrIndex < (int)addressVars.size(); i++) {
         if (actualFormatString[i] == '%' && i + 1 < actualFormatString.length()) {
             char specifier = actualFormatString[i + 1];
             if (specifier == '%') {
@@ -1909,12 +2079,21 @@ void generateScanfSubroutines() {
     void convertMallocCall(int numArgs, const std::string& resultVar) {
         if (numArgs >= 1 && !paramStack.empty()) {
             std::string sizeVar = paramStack.back();
-            std::string sizeReg = getRegisterForVar(sizeVar, false);
-            output.push_back("    move $a0, " + sizeReg + "  # Load size argument\n");
+            paramStack.pop_back(); // Important: remove from param stack
+            
+            // Handle literal size
+            if (std::regex_match(sizeVar, std::regex(R"(\d+)"))) {
+                output.push_back("    li $a0, " + sizeVar + "  # Load size literal\n");
+            } else {
+                std::string sizeReg = getRegisterForVar(sizeVar, false, true);
+                output.push_back("    move $a0, " + sizeReg + "  # Load size argument\n");
+            }
+            
             output.push_back("    li $v0, 9           # sbrk syscall (malloc)\n");
             output.push_back("    syscall\n");
+            
             if (!resultVar.empty()) {
-                std::string resultReg = getRegisterForVar(resultVar, false);
+                std::string resultReg = getRegisterForVar(resultVar, false, false);
                 output.push_back("    move " + resultReg + ", $v0  # Store returned pointer\n");
                 markDirty(resultVar, resultReg);
             }
@@ -2072,12 +2251,12 @@ public:
     std::ofstream outFile(outputFile);
     
     if (!inFile.is_open()) {
-        std::cerr << "Error: Cannot open input file " << inputFile << std::endl;
+        std::cerr << "Error: Cannot open input file " + inputFile << std::endl;
         return;
     }
     
     if (!outFile.is_open()) {
-        std::cerr << "Error: Cannot create output file " << outputFile << std::endl;
+        std::cerr << "Error: Cannot create output file " + outputFile << std::endl;
         return;
     }
     
