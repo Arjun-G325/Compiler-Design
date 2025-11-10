@@ -19,15 +19,12 @@ public:
     TACGenerator(const std::string& filename);
     ~TACGenerator();
     
-    // Temporary variable generation
     std::string newTemp();
     std::string newIntTemp();
     std::string newFloatTemp();
     
-    // Label generation
     std::string newLabel();
     
-    // Basic TAC operations with type awareness
     void emit(const std::string& result, const std::string& arg1, const std::string& op, const std::string& arg2);
     void emitIntOp(const std::string& result, const std::string& arg1, const std::string& op, const std::string& arg2);
     void emitFloatOp(const std::string& result, const std::string& arg1, const std::string& op, const std::string& arg2);
@@ -38,13 +35,11 @@ public:
     void emitIntUnary(const std::string& result, const std::string& op, const std::string& arg);
     void emitFloatUnary(const std::string& result, const std::string& op, const std::string& arg);
     
-    // Control flow
     void emitLabel(const std::string& label);
     void emitGoto(const std::string& label);
     void emitIfGoto(const std::string& condition, const std::string& label);
     void emitIfFalseGoto(const std::string& condition, const std::string& label);
     
-    // Function operations
     void emitParam(const std::string& param);
     void emitCall(const std::string& result, const std::string& function, int num_params);
     void emitReturn(const std::string& value);
@@ -53,7 +48,6 @@ public:
     void emitFunctionEnd(const std::string& function_name);
     void emitMemberAddress(const std::string& result, const std::string& struct_var, 
                                     const std::string& member);
-    // Array operations
     void emitArrayAccess(const std::string& result, const std::string& array,const std::string& index, int element_size);
     void emitArrayStore(const std::string& array, const std::string& index, const std::string& value, int element_size);
     void emitArrayAddress(const std::string& result, const std::string& array, 
@@ -63,16 +57,13 @@ public:
                                         const std::vector<int>& dimensions, int element_size);
     void emitMultiArrayAccess(const std::string& result, const std::string& array, const std::vector<std::string>& indices, const std::vector<int>& dimensions, int element_size);
     void emitMultiArrayStore(const std::string& array, const std::vector<std::string>& indices,const std::string& value,const std::vector<int>& dimensions, int element_size);
-    // Pointer operations
     void emitAddressOf(const std::string& result, const std::string& var);
     void emitDereference(const std::string& result, const std::string& ptr);
     void emitPointerStore(const std::string& ptr, const std::string& value);
     
-    // Structure operations
     void emitMemberAccess(const std::string& result, const std::string& struct_var, const std::string& member);
     void emitPointerMemberAccess(const std::string& result, const std::string& struct_ptr, const std::string& member);
     
-    // Type casting
     void emitCast(const std::string& result, const std::string& value, const std::string& type);
     void emitIntToFloat(const std::string& result, const std::string& int_val);
     void emitFloatToInt(const std::string& result, const std::string& float_val);
@@ -81,7 +72,6 @@ public:
     
     void emitRaw(const std::string& instruction);
     
-    // Helper function to determine operation type
     std::string getOperationType(const std::string& type1, const std::string& type2);
 };
 
@@ -98,7 +88,6 @@ typedef std::vector<ExprResult*> ExprList;
 typedef std::vector<InitializerItem*> InitializerList;
 typedef std::vector<MemberDef*> MemberDefList;
 
-    // Enum for access specifiers
     enum AccessSpecifier { AS_PUBLIC, AS_PRIVATE, AS_PROTECTED };
 
 struct ExprResult {
@@ -109,14 +98,12 @@ struct ExprResult {
     std::string tac_var;
     std::string string_val;
     
-    // Array access information
     bool is_array_element;
     Symbol* array_base_symbol;
     std::vector<std::string> array_indices;
     std::vector<int> array_dimensions;
     std::string array_address;
     
-    // Structure member access information
     bool is_struct_member;
     Symbol* struct_base_symbol;
     std::string member_name;
@@ -184,7 +171,6 @@ struct Symbol {
    inline int Type::getSize() const {
         int base_size = 0;
         
-        // Base type sizes
         if (base_type == "char") base_size = 1;
         else if (base_type == "short") base_size = 2;
         else if (base_type == "int") base_size = 4;
@@ -193,31 +179,27 @@ struct Symbol {
         else if (base_type == "double") base_size = 8;
         else if (base_type == "void") base_size = 0;
         else if (kind == TK_STRUCT || kind == TK_CLASS) {
-            // Calculate struct/class size (sum of all members)
             for (const auto& member : members) {
                 base_size += member.second->type->getSize();
             }
         }
         else if (kind == TK_UNION) {
-            // Calculate union size (max of all members)
             for (const auto& member : members) {
                 int member_size = member.second->type->getSize();
                 if (member_size > base_size) base_size = member_size;
             }
         }
         else if (kind == TK_ENUM) {
-            base_size = 4; // Enums are typically int-sized
+            base_size = 4;
         }
         else if (kind == TK_FUNCTION) {
-            return 8; // Function pointers
+            return 8;
         }
         
-        // Pointer types are always pointer-sized (8 bytes on 64-bit)
         if (pointer_level > 0) {
             return 8;
         }
         
-        // Array dimensions multiply the size
         int total_size = base_size;
         for (int dim : array_dimensions) {
             if (dim > 0) total_size *= dim;
@@ -234,7 +216,6 @@ Type* type;
 void* definition;
     };
       
-    // For control flow TAC generation
     struct ControlLabels {
         std::string break_label;
         std::string continue_label;
@@ -268,7 +249,7 @@ extern int yylineno;
 extern char* yytext;
 extern FILE* yyin;
 void yyerror(const char* s);
-// Add this helper function in the parser code
+
 void handleMultiDimArrayInitialization(const std::string& array_name,
                                      std::vector<InitializerItem*>* initializers,
                                      const std::vector<int>& dimensions,
@@ -303,7 +284,6 @@ if (kind == TK_FUNCTION && return_type) {
     return desc;
 }
 
-// Add to global variables section
 bool g_parsing_lhs_of_assignment = false;
 stack<map<string, Symbol*>> symbol_table;
 map<string, Type*> type_table;
@@ -320,7 +300,6 @@ Type* g_current_class_scope = nullptr;
 bool g_parsing_lambda = false;
 Type* g_inferred_return_type = nullptr;
 
-// Control flow label stack
 stack<ControlLabels> control_stack;
 std::stack<std::pair<string, string>> if_stack;
 
@@ -364,7 +343,6 @@ void yyerror(const char*s) {
     cerr << "Parser Error at line " << yylineno << ": " << s << " near '" << yytext << "'" << endl;
 }
 
-// Add this helper function in the parser code
 void handleMultiDimArrayInitialization(const std::string& array_name,
                                      std::vector<InitializerItem*>* initializers,
                                      const std::vector<int>& dimensions,
@@ -381,15 +359,12 @@ void handleMultiDimArrayInitialization(const std::string& array_name,
         new_indices.push_back(i);
         
         if (item->is_list && current_dim + 1 < dimensions.size()) {
-            // Recursively handle nested dimensions
             handleMultiDimArrayInitialization(array_name, item->list, dimensions,
                                             element_size, new_indices, current_dim + 1);
         } else if (!item->is_list && item->expr && item->expr->tac_var != "") {
-            // Calculate linear index for this element
             int linear_index = 0;
             int stride = 1;
             
-            // Calculate linear index using row-major order
             for (int dim = dimensions.size() - 1; dim >= 0; dim--) {
                 linear_index += new_indices[dim] * stride;
                 if (dim > 0) {
@@ -397,12 +372,9 @@ void handleMultiDimArrayInitialization(const std::string& array_name,
                 }
             }
             
-            // Emit the store operation
             tac_gen->emitArrayStore(array_name, to_string(linear_index), 
                                   item->expr->tac_var, element_size);
         }
-        
-        // Don't delete item here - it will be deleted in the caller
     }
 }
 
@@ -412,41 +384,35 @@ std::vector<Type*> get_printf_specifier_types(const std::string& format_string) 
         if (format_string[i] == '%') {
             if (i + 1 < format_string.length()) {
                 if (format_string[i+1] == '%') {
-                    i++; // Skip '%%'
+                    i++;
                     continue;
                 }
                 
-                // Check for %lf
                 if (i + 2 < format_string.length() && format_string.substr(i+1, 2) == "lf") {
-                    types.push_back(new Type("double")); // %lf expects double
+                    types.push_back(new Type("double"));
                     i += 2;
                 }
-                // Check for %d
                 else if (format_string[i+1] == 'd') {
                     types.push_back(new Type("int"));
                     i++;
                 }
                 else if (format_string[i+1] == 'c') {
-                    types.push_back(new Type("int")); // %c expects int (char promoted)
+                    types.push_back(new Type("int"));
                     i++;
                 }
-                // Check for %f
                 else if (format_string[i+1] == 'f') {
-                    // Note: C promotes floats to doubles in variadic functions
                     types.push_back(new Type("double")); 
                     i++;
                 }
-                // Check for %s
                 else if (format_string[i+1] == 's') {
                     Type* t = new Type("char");
-                    t->pointer_level = 1; // %s expects char*
+                    t->pointer_level = 1;
                     types.push_back(t);
                     i++;
                 }
-                // Check for %p
                 else if (format_string[i+1] == 'p') {
                     Type* t = new Type("void");
-                    t->pointer_level = 1; // %p expects void*
+                    t->pointer_level = 1;
                     types.push_back(t);
                     i++;
                 }
@@ -456,12 +422,6 @@ std::vector<Type*> get_printf_specifier_types(const std::string& format_string) 
     return types;
 }
 
-/**
- * @brief Parses a scanf format string and returns a vector of expected pointer types.
- */
-/**
- * @brief Parses a scanf format string and returns a vector of expected pointer types.
- */
 std::vector<Type*> get_scanf_specifier_types(const std::string& format_string) {
     std::vector<Type*> types;
     bool in_specifier = false;
@@ -470,7 +430,6 @@ std::vector<Type*> get_scanf_specifier_types(const std::string& format_string) {
     for (size_t i = 0; i < format_string.length(); ++i) {
         if (format_string[i] == '%') {
             if (in_specifier) {
-                // Previous specifier wasn't properly terminated
                 yyerror("Invalid format specifier in scanf");
             }
             in_specifier = true;
@@ -479,64 +438,59 @@ std::vector<Type*> get_scanf_specifier_types(const std::string& format_string) {
         else if (in_specifier) {
             current_specifier += format_string[i];
             
-            // Check if this completes a valid specifier
             if (format_string[i] == 'd' || format_string[i] == 'i') {
                 Type* t = new Type("int");
-                t->pointer_level = 1; // %d expects int*
+                t->pointer_level = 1;
                 types.push_back(t);
                 in_specifier = false;
                 current_specifier.clear();
             }
             else if (format_string[i] == 'f') {
                 Type* t = new Type("float");
-                t->pointer_level = 1; // %f expects float*
+                t->pointer_level = 1;
                 types.push_back(t);
                 in_specifier = false;
                 current_specifier.clear();
             }
             else if (format_string[i] == 'c') {
                 Type* t = new Type("char");
-                t->pointer_level = 1; // %c expects char*
+                t->pointer_level = 1;
                 types.push_back(t);
                 in_specifier = false;
                 current_specifier.clear();
             }
             else if (format_string[i] == 's') {
                 Type* t = new Type("char");
-                t->pointer_level = 1; // %s expects char*
+                t->pointer_level = 1;
                 types.push_back(t);
                 in_specifier = false;
                 current_specifier.clear();
             }
             else if (format_string[i] == 'p') {
                 Type* t = new Type("void");
-                t->pointer_level = 2; // %p expects void**
+                t->pointer_level = 2;
                 types.push_back(t);
                 in_specifier = false;
                 current_specifier.clear();
             }
             else if (i + 1 < format_string.length() && 
                      current_specifier == "%l" && format_string[i+1] == 'f') {
-                // Handle %lf
                 Type* t = new Type("double");
-                t->pointer_level = 1; // %lf expects double*
+                t->pointer_level = 1;
                 types.push_back(t);
-                i++; // Skip the 'f'
+                i++;
                 in_specifier = false;
                 current_specifier.clear();
             }
             else if (format_string[i] == '%') {
-                // Handle %% (literal percent)
                 in_specifier = false;
                 current_specifier.clear();
             }
             else if (isspace(format_string[i])) {
-                // Space terminates the format specifier (invalid in scanf)
                 yyerror("Unexpected space in scanf format specifier");
                 in_specifier = false;
                 current_specifier.clear();
             }
-            // If we reach the end and still have an incomplete specifier
             else if (i == format_string.length() - 1) {
                 yyerror("Incomplete format specifier in scanf");
                 in_specifier = false;
@@ -544,13 +498,11 @@ std::vector<Type*> get_scanf_specifier_types(const std::string& format_string) {
             }
         }
         else if (!isspace(format_string[i])) {
-            // Any non-whitespace, non-% character outside a specifier is invalid for scanf
             std::string error_msg = "Invalid character '";
             error_msg += format_string[i];
             error_msg += "' in scanf format string (only format specifiers and spaces allowed)";
             yyerror(error_msg.c_str());
         }
-        // Spaces between specifiers are allowed and ignored
     }
     
     if (in_specifier) {
@@ -560,23 +512,17 @@ std::vector<Type*> get_scanf_specifier_types(const std::string& format_string) {
     return types;
 }
 
-
-/**
- * @brief Performs semantic checks and TAC generation for function calls.
- */
 ExprResult* handle_function_call(ExprResult* func_expr, ExprList* args) {
     std::string func_name = func_expr->tac_var;
     int num_params = args->size();
     ExprResult* result = new ExprResult();
 
-    // --- Special Handling for printf ---
     if (func_name == "printf") {
         if (num_params == 0) {
             yyerror("printf requires at least one argument (the format string)");
         } else {
             ExprResult* format_arg = args->at(0);
             if (!format_arg->string_val.empty()) {
-                // Format string is a literal, we can check types
                 std::string format_string = format_arg->string_val;
                 std::vector<Type*> expected_types = get_printf_specifier_types(format_string);
                 int num_specifiers = expected_types.size();
@@ -588,36 +534,25 @@ ExprResult* handle_function_call(ExprResult* func_expr, ExprList* args) {
                                       std::to_string(num_provided_args) + " arguments provided";
                     yyerror(err.c_str());
                 } else {
-                    // Counts match, now check types
                     for (int i = 0; i < num_specifiers; ++i) {
                         Type* expected = expected_types[i];
                         Type* provided = args->at(i + 1)->type;
                         bool type_mismatch = false;
 
-                        // Check base type (with promotion rules)
                         if (expected->base_type != provided->base_type) {
-                            // %d (int) can take char/short (promoted to int)
                             if (expected->base_type == "int" && (provided->base_type == "char" || provided->base_type == "short")) {
-                                // OK
                             }
-                            // %f/%lf (double) can take float (promoted to double)
                             else if (expected->base_type == "double" && provided->base_type == "float") {
-                                // OK
                             } else {
                                 type_mismatch = true;
                             }
                         }
                         
-                        // Check pointer level
                         if (expected->pointer_level != provided->pointer_level) {
-                            // %p (void*) can take any pointer
                             if (expected->base_type == "void" && expected->pointer_level == 1 && provided->pointer_level > 0) {
-                                // OK
                             }
-                            // %s (char*) can take (const char*)
                             else if (expected->base_type == "char" && expected->pointer_level == 1 &&
                                      provided->base_type == "char" && provided->pointer_level == 1) {
-                                // OK (ignoring const)
                             }
                             else {
                                 type_mismatch = true;
@@ -629,23 +564,20 @@ ExprResult* handle_function_call(ExprResult* func_expr, ExprList* args) {
                             yyerror(err.c_str());
                         }
                         
-                        delete expected; // Clean up the type we created
+                        delete expected;
                     }
                 }
             }
-            // else: Format string is a variable, we can't check types at compile time.
         }
-        result->type = new Type("int"); // printf returns an int
+        result->type = new Type("int");
     }
     
-    // --- Special Handling for scanf ---
     else if (func_name == "scanf") {
         if (num_params == 0) {
             yyerror("scanf requires at least one argument (the format string)");
         } else {
             ExprResult* format_arg = args->at(0);
             if (!format_arg->string_val.empty()) {
-                // Format string is a literal, check types
                 std::string format_string = format_arg->string_val;
                 std::vector<Type*> expected_types = get_scanf_specifier_types(format_string);
                 int num_specifiers = expected_types.size();
@@ -657,12 +589,10 @@ ExprResult* handle_function_call(ExprResult* func_expr, ExprList* args) {
                                       std::to_string(num_provided_args) + " arguments provided";
                     yyerror(err.c_str());
                 } else {
-                    // Counts match, now check types
                     for (int i = 0; i < num_specifiers; ++i) {
                         Type* expected = expected_types[i];
                         Type* provided = args->at(i + 1)->type;
 
-                        // scanf requires exact pointer type matches
                         bool type_mismatch = (expected->base_type != provided->base_type) ||
                                              (expected->pointer_level != provided->pointer_level);
 
@@ -672,11 +602,10 @@ ExprResult* handle_function_call(ExprResult* func_expr, ExprList* args) {
                             yyerror(err.c_str());
                         }
                         
-                        delete expected; // Clean up
+                        delete expected;
                     }
                 }
             } else {
-                // Can't check types, but at least check that they are all pointers
                 for (int i = 1; i < num_params; ++i) {
                     if (args->at(i)->type->pointer_level == 0) {
                         yyerror("scanf: argument after format string must be a pointer");
@@ -684,20 +613,17 @@ ExprResult* handle_function_call(ExprResult* func_expr, ExprList* args) {
                 }
             }
         }
-        result->type = new Type("int"); // scanf returns an int
+        result->type = new Type("int");
     }
     
-    // --- Special Handling for malloc ---
     else if (func_name == "malloc") {
         if (num_params != 1) {
             yyerror("malloc: takes exactly one argument");
         }
-        // TODO: check that argument is an integer type
-        result->type = new Type("void"); // malloc returns void*
+        result->type = new Type("void");
         result->type->pointer_level = 1;
     }
 
-    // --- Special Handling for free ---
     else if (func_name == "free") {
         if (num_params != 1) {
             yyerror("free: takes exactly one argument");
@@ -705,37 +631,28 @@ ExprResult* handle_function_call(ExprResult* func_expr, ExprList* args) {
         if (args->at(0)->type->pointer_level == 0) {
              yyerror("free: argument must be a pointer");
         }
-        result->type = new Type("void"); // free returns void
+        result->type = new Type("void");
     }
 
-    // --- Default Function Call Handling ---
     else {
         Symbol* func_sym = lookup_symbol(func_name);
         if (func_sym && func_sym->kind == SK_FUNCTION) {
-            // Found symbol, check parameters
             if (func_sym->type->parameter_types.size() != (size_t)num_params) {
                 std::string err = "function '" + func_name + "': incorrect number of arguments (expected " +
                                   std::to_string(func_sym->type->parameter_types.size()) +
                                   ", got " + std::to_string(num_params) + ")";
                 yyerror(err.c_str());
             }
-            // TODO: Add type checking for each parameter
             result->type = new Type(*func_sym->type->return_type);
         } else {
-            // Unknown function (e.g., implicit declaration)
-            // Default to returning int per C89 rules
             result->type = new Type("int");
         }
     }
 
-    // --- TAC Generation (Common to all calls) ---
-    
-    // 1. Emit parameters in reverse order (C-style stack push)
     for (auto it = args->rbegin(); it != args->rend(); ++it) {
         tac_gen->emitParam((*it)->tac_var);
     }
     
-    // 2. Emit the call
     std::string temp_var;
     if (result->type->isFloatType()) {
         temp_var = tac_gen->newFloatTemp();
@@ -744,10 +661,8 @@ ExprResult* handle_function_call(ExprResult* func_expr, ExprList* args) {
     }
     tac_gen->emitCall(temp_var, func_name, num_params);
     
-    // 3. Store the result
     result->tac_var = temp_var;
     
-    // Clean up argument expressions
     for (ExprResult* arg : *args) {
         delete arg;
     }
@@ -1021,14 +936,12 @@ function_definition
           install_symbol(func_sym);
           g_current_function = func_sym;
           
-          // Function begin
           tac_gen->emitFunctionBegin(func_sym->name);
           
           enter_scope();
           if (g_current_param_list) {
               for (Symbol* p : *g_current_param_list) {
                   install_symbol(p);
-                  // Parameter declaration
                   tac_gen->emitComment("Parameter: " + p->name);
               }
               delete g_current_param_list;
@@ -1046,7 +959,6 @@ function_definition
               }
           }
           
-          // Function end
           tac_gen->emitFunctionEnd(g_current_function->name);
           
           g_current_function = nullptr;
@@ -1071,12 +983,10 @@ declaration
                     }
                 }
                 
-                // Emit declaration comment FIRST (now type is complete, size will be correct)
                 int size = sym->type->getSize();
                 tac_gen->emitComment("Variable declaration: " + sym->name + " : " + 
                                     sym->type->toString() + " (size: " + to_string(size) + " bytes)");
                 
-                // THEN emit initialization if present
                 if (sym->has_initializer && !sym->init_expr.empty()) {
                     if (sym->type->isFloatType()) {
                         tac_gen->emitFloatAssignment(sym->name, sym->init_expr);
@@ -1128,13 +1038,17 @@ init_declarator
     | declarator ASSIGN assignment_expression {
         Symbol* sym = $1;
         ExprResult* expr = $3;
-        if ($1->type->pointer_level != $3->type->pointer_level) {
-            
-            // You can add more complex checks here (e.g., for base types, void*, etc.)
-            // But the pointer level check is the one failing in your case.
-
-            yyerror("Type mismatch in initialization: pointer levels differ");
+        
+        if (sym->type->pointer_level != expr->type->pointer_level) {
+            if (expr->type->base_type == "void" && expr->type->pointer_level > 0) {
+            }
+            else if (expr->is_const_expr && expr->dval == 0.0 && sym->type->pointer_level > 0) {
+            }
+            else {
+                yyerror("Type mismatch in initialization: pointer levels differ");
+            }
         }
+        
         sym->dval = expr->dval;
         
         if (g_current_base_type && g_current_base_type->base_type == "auto") {
@@ -1153,14 +1067,12 @@ init_declarator
             }
         }
         
-        // Store the initializer to emit later in declaration rule
         sym->init_expr = expr->tac_var;
         sym->has_initializer = true;
         
         delete expr;
         $$ = sym;
     }
-    // Replace the array initialization section in init_declarator rule:
 | declarator ASSIGN initializer_list {
     Symbol* sym = $1;
     std::vector<InitializerItem*>* initializers = $3;
@@ -1168,22 +1080,18 @@ init_declarator
     if (!sym->type->array_dimensions.empty()) {
         tac_gen->emitComment("Array initialization: " + sym->name);
         
-        // Calculate element size (size of base type)
-        int element_size = 4; // Default for int
+        int element_size = 4;
         if (sym->type->base_type == "float") element_size = 4;
         else if (sym->type->base_type == "double") element_size = 8;
         else if (sym->type->base_type == "char") element_size = 1;
         else if (sym->type->base_type == "short") element_size = 2;
         
-        // Handle multi-dimensional array initialization
         if (sym->type->array_dimensions.size() > 1) {
-            // For 2D/3D arrays with nested initializers
             std::vector<int> indices;
             handleMultiDimArrayInitialization(sym->name, initializers, 
                                             sym->type->array_dimensions, 
                                             element_size, indices, 0);
         } else {
-            // For 1D arrays
             int array_size = sym->type->array_dimensions[0];
             if (array_size >= 0 && initializers->size() > (size_t)array_size) {
                 yyerror(("too many initializers for array of size " + to_string(array_size)).c_str());
@@ -1524,7 +1432,6 @@ expression_statement:
 function_call_statement:
     identifier LPAREN RPAREN 
     {
-        // Create ExprResult from identifier
         ExprResult* func_expr = new ExprResult();
         func_expr->tac_var = string($1);
         Symbol* sym = lookup_symbol(string($1));
@@ -1532,12 +1439,11 @@ function_call_statement:
             func_expr->type = sym->type;
             func_expr->lvalue_symbol = sym;
         } else {
-            func_expr->type = new Type("int"); // Default type for unknown functions
+            func_expr->type = new Type("int");
         }
         
         ExprList* empty_args = new ExprList();
         ExprResult* result = handle_function_call(func_expr, empty_args);
-        // Discard the result for standalone function calls
         delete result;
         delete empty_args;
         delete func_expr;
@@ -1545,7 +1451,6 @@ function_call_statement:
     }
     | identifier LPAREN argument_list RPAREN 
     {
-        // Create ExprResult from identifier
         ExprResult* func_expr = new ExprResult();
         func_expr->tac_var = string($1);
         Symbol* sym = lookup_symbol(string($1));
@@ -1553,11 +1458,10 @@ function_call_statement:
             func_expr->type = sym->type;
             func_expr->lvalue_symbol = sym;
         } else {
-            func_expr->type = new Type("int"); // Default type for unknown functions
+            func_expr->type = new Type("int");
         }
         
         ExprResult* result = handle_function_call(func_expr, $3);
-        // Discard the result for standalone function calls
         delete result;
         delete $3;
         delete func_expr;
@@ -1850,17 +1754,14 @@ expression
 assignment_expression
     : conditional_expression { $$ = $1; }
     | unary_expression ASSIGN assignment_expression {
-    // Set flag to indicate we're parsing LHS of assignment
     g_parsing_lhs_of_assignment = true;
     ExprResult* lhs = $1;
     g_parsing_lhs_of_assignment = false;
     
     ExprResult* rhs = $3;
     
-    // Pointer level compatibility check
     if (lhs->type && rhs->type) {
         if (lhs->type->pointer_level != rhs->type->pointer_level) {
-            // Allow assignment of 0 to any pointer (NULL assignment)
             if (!(rhs->is_const_expr && rhs->dval == 0.0 && lhs->type->pointer_level > 0)) {
                 yyerror(("Assignment between incompatible pointer levels: " + 
                         to_string(lhs->type->pointer_level) + " vs " + 
@@ -1868,36 +1769,44 @@ assignment_expression
             }
         }
         
-        // Check const correctness for pointers
         if (lhs->type->pointer_level > 0 && lhs->type->is_const && 
             !rhs->type->is_const) {
             yyerror("Cannot assign non-const pointer to const pointer");
         }
     }
     
-    if (lhs->is_array_element) {
-        // For array assignment, use the pre-calculated address from lhs
+        if (lhs->is_array_element) {
         if (lhs->array_address.empty()) {
-            yyerror("Invalid array element assignment");
-            $$ = new ExprResult(0.0, nullptr, nullptr);
-        } else {
-            // Direct store using the pre-calculated address
-            tac_gen->emitRaw("*" + lhs->array_address + " = " + rhs->tac_var);
-            
-            $$ = new ExprResult(rhs->dval, rhs->type, nullptr);
-            $$->tac_var = rhs->tac_var;
+            if (lhs->array_base_symbol && lhs->array_indices.size() == 1) {
+                int element_size = 4;
+                if (lhs->type->base_type == "float") element_size = 4;
+                else if (lhs->type->base_type == "double") element_size = 8;
+                else if (lhs->type->base_type == "char") element_size = 1;
+                else if (lhs->type->base_type == "short") element_size = 2;
+                
+                lhs->array_address = tac_gen->newTemp();
+                tac_gen->emitArrayAddress(lhs->array_address, lhs->array_base_symbol->name, 
+                                        lhs->array_indices[0], element_size);
+            } else {
+                yyerror("Invalid array element assignment");
+                $$ = new ExprResult(0.0, nullptr, nullptr);
+                delete lhs;
+                delete rhs;
+            }
         }
+        
+        tac_gen->emitRaw("*" + lhs->array_address + " = " + rhs->tac_var);
+        
+        $$ = new ExprResult(rhs->dval, rhs->type, nullptr);
+        $$->tac_var = rhs->tac_var;
     }
     else if (lhs->is_struct_member) {
-    // For structure member assignment
     if (lhs->struct_base_symbol && !lhs->member_name.empty()) {
-        // Use direct member access for assignment
         tac_gen->emitAssignment(lhs->struct_base_symbol->name + "." + lhs->member_name, rhs->tac_var);
         
         $$ = new ExprResult(rhs->dval, rhs->type, nullptr);
         $$->tac_var = rhs->tac_var;
     } else if (!lhs->member_address.empty()) {
-        // Use pre-calculated address
         tac_gen->emitRaw("*" + lhs->member_address + " = " + rhs->tac_var);
         
         $$ = new ExprResult(rhs->dval, rhs->type, nullptr);
@@ -1911,7 +1820,6 @@ assignment_expression
         yyerror("lvalue required as left operand of assignment");
         $$ = new ExprResult(0.0, nullptr, nullptr);
     } else {
-        // Handle regular variable assignment
         lhs->lvalue_symbol->dval = rhs->dval;
         
         if (lhs->type->isFloatType()) {
@@ -1942,12 +1850,10 @@ assignment_expression
     ExprResult* lhs = $1;
     ExprResult* rhs = $3;
     
-    // Check for pointer arithmetic validity
     if (lhs->type->pointer_level > 0) {
         if (rhs->type->pointer_level > 0) {
             yyerror("Invalid pointer arithmetic operation");
         }
-        // Pointer arithmetic (+=) is allowed with integers
     }
     
     if (!lhs->lvalue_symbol) {
@@ -1988,12 +1894,10 @@ assignment_expression
     ExprResult* lhs = $1;
     ExprResult* rhs = $3;
     
-    // Check for pointer arithmetic validity
     if (lhs->type->pointer_level > 0) {
         if (rhs->type->pointer_level > 0) {
             yyerror("Invalid pointer arithmetic operation");
         }
-        // Pointer arithmetic (-=) is allowed with integers
     }
     
     if (!lhs->lvalue_symbol) {
@@ -2034,7 +1938,6 @@ assignment_expression
     ExprResult* lhs = $1;
     ExprResult* rhs = $3;
     
-    // Check for invalid pointer operations
     if (lhs->type->pointer_level > 0) {
         yyerror("Invalid operation on pointer type");
     }
@@ -2077,7 +1980,6 @@ assignment_expression
     ExprResult* lhs = $1;
     ExprResult* rhs = $3;
     
-    // Check for invalid pointer operations
     if (lhs->type->pointer_level > 0) {
         yyerror("Invalid operation on pointer type");
     }
@@ -2580,7 +2482,6 @@ unary_expression
     | '&' cast_expression {
     string temp = tac_gen->newIntTemp();
     
-    // Check if we can take address
     if (!$2->lvalue_symbol && !$2->is_array_element && !$2->is_struct_member) {
         yyerror("Cannot take address of non-lvalue expression");
         $$ = new ExprResult(0.0, nullptr, nullptr);
@@ -2588,10 +2489,8 @@ unary_expression
         if ($2->lvalue_symbol) {
             tac_gen->emitAddressOf(temp, $2->lvalue_symbol->name);
         } else if ($2->is_array_element && !$2->array_address.empty()) {
-            // Array element address is already calculated
             tac_gen->emitAssignment(temp, $2->array_address);
         } else if ($2->is_struct_member && !$2->member_address.empty()) {
-            // Struct member address is already calculated  
             tac_gen->emitAssignment(temp, $2->member_address);
         }
         
@@ -2627,9 +2526,8 @@ unary_expression
         $$ = new ExprResult($2->dval, base_type, nullptr);
         $$->tac_var = temp;
         
-        // For dereferenced pointers, we can treat them as lvalues for further assignment
         if ($2->type->pointer_level == 1) {
-            $$->lvalue_symbol = $2->lvalue_symbol; // May need adjustment
+            $$->lvalue_symbol = $2->lvalue_symbol;
         }
     }
     delete $2;
@@ -2693,82 +2591,116 @@ unary_expression
 postfix_expression
     : primary_expression { $$ = $1; }
     | postfix_expression LBRACKET expression RBRACKET {
-    ExprResult* array_expr = $1;
+    ExprResult* base_expr = $1;
     ExprResult* index_expr = $3;
     
-    // Check if we're on LHS of assignment
     bool is_for_assignment = g_parsing_lhs_of_assignment;
     
-    // Check if this is an array access
-    if ((array_expr->lvalue_symbol && !array_expr->type->array_dimensions.empty()) || 
-        array_expr->is_array_element) {
-        
-        // Prepare indices and dimensions
+    bool is_array_access = (base_expr->lvalue_symbol && !base_expr->type->array_dimensions.empty());
+    bool is_pointer_access = (base_expr->type->pointer_level > 0);
+    
+    if (is_array_access || is_pointer_access) {
+        Symbol* base_symbol;
         std::vector<std::string> indices;
         std::vector<int> dimensions;
-        Symbol* base_symbol;
         
-        if (array_expr->is_array_element) {
-            // Multi-dimensional array access like a[1][0]
-            indices = array_expr->array_indices;
-            dimensions = array_expr->array_dimensions;
-            base_symbol = array_expr->array_base_symbol;
+        if (base_expr->is_array_element) {
+            indices = base_expr->array_indices;
+            dimensions = base_expr->array_dimensions;
+            base_symbol = base_expr->array_base_symbol;
             indices.push_back(index_expr->tac_var);
+        } else if (is_array_access) {
+            indices.push_back(index_expr->tac_var);
+            dimensions = base_expr->type->array_dimensions;
+            base_symbol = base_expr->lvalue_symbol;
         } else {
-            // First dimension access like a[1]
             indices.push_back(index_expr->tac_var);
-            dimensions = array_expr->type->array_dimensions;
-            base_symbol = array_expr->lvalue_symbol;
+            dimensions.push_back(-1);
+            base_symbol = base_expr->lvalue_symbol;
+            
+            if (!base_symbol && base_expr->tac_var != "") {
+                base_symbol = new Symbol();
+                base_symbol->name = base_expr->tac_var;
+                base_symbol->type = base_expr->type;
+            }
         }
         
-        int element_size = 4; // Default for int
-        if (array_expr->type->base_type == "float") element_size = 4;
-        else if (array_expr->type->base_type == "double") element_size = 8;
-        else if (array_expr->type->base_type == "char") element_size = 1;
-        else if (array_expr->type->base_type == "short") element_size = 2;
+        int element_size = 4;
+        Type* element_type;
         
-        // Create result
-        $$ = new ExprResult(0.0, array_expr->type, nullptr);
+        if (is_pointer_access) {
+            element_type = new Type(*base_expr->type);
+            element_type->pointer_level--;
+            element_size = element_type->getSize();
+        } else {
+            element_type = base_expr->type;
+            if (element_type->base_type == "float") element_size = 4;
+            else if (element_type->base_type == "double") element_size = 8;
+            else if (element_type->base_type == "char") element_size = 1;
+            else if (element_type->base_type == "short") element_size = 2;
+        }
+        
+        $$ = new ExprResult(0.0, element_type, nullptr);
         $$->is_array_element = true;
         $$->array_base_symbol = base_symbol;
         $$->array_indices = indices;
         $$->array_dimensions = dimensions;
         
         if (is_for_assignment) {
-            // For assignment LHS: calculate address only, store in array_address
             $$->array_address = tac_gen->newTemp();
             if (indices.size() == 1) {
-                tac_gen->emitArrayAddress($$->array_address, base_symbol->name, 
-                                        indices[0], element_size);
+                if (base_symbol) {
+                    tac_gen->emitArrayAddress($$->array_address, base_symbol->name, 
+                                            indices[0], element_size);
+                } else {
+                    string temp_index = tac_gen->newIntTemp();
+                    tac_gen->emitIntOp(temp_index, indices[0], "*", to_string(element_size));
+                    tac_gen->emit($$->array_address, base_expr->tac_var, "+", temp_index);
+                }
             } else {
-                tac_gen->emitMultiArrayAddress($$->array_address, base_symbol->name, 
-                                             indices, dimensions, element_size);
+                if (base_symbol) {
+                    tac_gen->emitMultiArrayAddress($$->array_address, base_symbol->name, 
+                                                 indices, dimensions, element_size);
+                }
             }
-            $$->tac_var = $$->array_address; // For assignment, tac_var is the address
+            $$->tac_var = $$->array_address; 
         } else {
-            // For normal access: calculate address AND load value
-            $$->tac_var = (array_expr->type->isFloatType()) ? 
+            $$->tac_var = (element_type->isFloatType()) ? 
                          tac_gen->newFloatTemp() : tac_gen->newIntTemp();
+            
             if (indices.size() == 1) {
-                tac_gen->emitArrayAccess($$->tac_var, base_symbol->name, 
-                                       indices[0], element_size);
+                if (base_symbol) {
+                    tac_gen->emitArrayAccess($$->tac_var, base_symbol->name, 
+                                           indices[0], element_size);
+                } else {
+                    string addr_temp = tac_gen->newTemp();
+                    string temp_index = tac_gen->newIntTemp();
+                    tac_gen->emitIntOp(temp_index, indices[0], "*", to_string(element_size));
+                    tac_gen->emit(addr_temp, base_expr->tac_var, "+", temp_index);
+                    tac_gen->emitDereference($$->tac_var, addr_temp);
+                }
             } else {
-                tac_gen->emitMultiArrayAccess($$->tac_var, base_symbol->name, 
-                                            indices, dimensions, element_size);
+                if (base_symbol) {
+                    tac_gen->emitMultiArrayAccess($$->tac_var, base_symbol->name, 
+                                                indices, dimensions, element_size);
+                }
             }
         }
         
+        if (is_pointer_access) {
+            delete element_type;
+        }
+        
     } else {
-        yyerror("Array access on non-array type");
+        yyerror("Array access on non-array or non-pointer type");
         $$ = new ExprResult(0.0, nullptr, nullptr);
     }
     
-    delete array_expr;
+    delete base_expr;
     delete index_expr;
 }
     | postfix_expression LPAREN RPAREN 
     {
-        // Check if the postfix_expression is an identifier (function name)
         if ($1->lvalue_symbol && $1->lvalue_symbol->kind == SK_FUNCTION) {
             ExprList* empty_args = new ExprList();
             $$ = handle_function_call($1, empty_args);
@@ -2781,7 +2713,6 @@ postfix_expression
     }
     | postfix_expression LPAREN argument_list RPAREN 
     {
-        // Check if the postfix_expression is an identifier (function name)
         if ($1->lvalue_symbol && $1->lvalue_symbol->kind == SK_FUNCTION) {
             $$ = handle_function_call($1, $3);
         } else {
@@ -2796,7 +2727,6 @@ postfix_expression
     string member_name = string($3);
     Type* struct_type = struct_expr->type;
     
-    // Check if we're on LHS of assignment
     bool is_for_assignment = g_parsing_lhs_of_assignment;
     
     if (struct_type->kind != TK_STRUCT && struct_type->kind != TK_UNION && struct_type->kind != TK_CLASS) {
@@ -2808,21 +2738,18 @@ postfix_expression
     } else {
         Symbol* member_sym = struct_type->members.at(member_name);
         
-        // Create result
         $$ = new ExprResult(member_sym->dval, member_sym->type, member_sym);
         $$->is_struct_member = true;
         $$->struct_base_symbol = struct_expr->lvalue_symbol;
         $$->member_name = member_name;
         
         if (is_for_assignment) {
-            // For assignment LHS: calculate member address
             $$->member_address = tac_gen->newTemp();
             if (struct_expr->lvalue_symbol) {
                 tac_gen->emitMemberAddress($$->member_address, struct_expr->lvalue_symbol->name, member_name);
             }
-            $$->tac_var = $$->member_address; // For assignment, tac_var is the address
+            $$->tac_var = $$->member_address;
         } else {
-            // For normal access: load the member value
             $$->tac_var = (member_sym->type->isFloatType()) ? 
                          tac_gen->newFloatTemp() : tac_gen->newIntTemp();
             if (struct_expr->lvalue_symbol) {
@@ -2937,8 +2864,7 @@ primary_expression
         :identifier {
         Symbol* sym = lookup_symbol(string($1));
         if (!sym) {
-            // Check if this might be a function call (will be handled in postfix_expression)
-            $$ = new ExprResult(0.0, new Type("int"), nullptr); // Default type
+            $$ = new ExprResult(0.0, new Type("int"), nullptr);
             $$->tac_var = string($1);
         } else {
             $$ = new ExprResult(sym->dval, sym->type, sym);
@@ -3241,7 +3167,7 @@ void TACGenerator::emitFunctionBegin(const std::string& function_name) {
 void TACGenerator::emitFunctionEnd(const std::string& function_name) {
     outfile << "EndFunc " << function_name << "\n" << std::endl;
 }
-// Single dimension array - access with load
+
 void TACGenerator::emitArrayAccess(const std::string& result, const std::string& array, 
                                    const std::string& index, int element_size) {
     std::string addr_temp = newTemp();
@@ -3249,7 +3175,6 @@ void TACGenerator::emitArrayAccess(const std::string& result, const std::string&
     outfile << result << " = *" << addr_temp << std::endl;
 }
 
-// Multi-dimensional array - access with load
 void TACGenerator::emitMultiArrayAccess(const std::string& result, const std::string& array, 
                                        const std::vector<std::string>& indices, 
                                        const std::vector<int>& dimensions, int element_size) {
@@ -3262,11 +3187,9 @@ void TACGenerator::emitMemberAddress(const std::string& result, const std::strin
     outfile << result << " = &" << struct_var << "." << member << std::endl;
 }
 
-// Single dimension array - address only
 void TACGenerator::emitArrayAddress(const std::string& result, const std::string& array, 
                                    const std::string& index, int element_size) {
     if (index == "0") {
-        // Optimize: if index is 0, just take address of array
         outfile << result << " = &" << array << std::endl;
     } else {
         std::string offset_temp = newTemp();
@@ -3275,7 +3198,6 @@ void TACGenerator::emitArrayAddress(const std::string& result, const std::string
     }
 }
 
-// Multi-dimensional array - address only  
 void TACGenerator::emitMultiArrayAddress(const std::string& result, const std::string& array, 
                                         const std::vector<std::string>& indices, 
                                         const std::vector<int>& dimensions, int element_size) {
@@ -3284,13 +3206,11 @@ void TACGenerator::emitMultiArrayAddress(const std::string& result, const std::s
         return;
     }
     
-    // Pre-calculate strides
     std::vector<int> strides(dimensions.size(), element_size);
     for (int i = dimensions.size() - 2; i >= 0; i--) {
         strides[i] = strides[i + 1] * dimensions[i + 1];
     }
     
-    // Check if all indices are zero
     bool all_zero = true;
     for (const auto& idx : indices) {
         if (idx != "0") {
@@ -3300,20 +3220,18 @@ void TACGenerator::emitMultiArrayAddress(const std::string& result, const std::s
     }
     
     if (all_zero) {
-        // Optimize: if all indices are 0, just take address of array
         outfile << result << " = &" << array << std::endl;
         return;
     }
     
-    // Calculate offset efficiently
     std::string offset = "0";
     bool first_term = true;
     
     for (size_t i = 0; i < indices.size(); i++) {
-        if (indices[i] != "0") { // Skip zero indices
+        if (indices[i] != "0") {
             std::string term;
             if (strides[i] == 1) {
-                term = indices[i]; // No multiplication needed
+                term = indices[i];
             } else {
                 term = newTemp();
                 emit(term, indices[i], "*", std::to_string(strides[i]));
@@ -3330,7 +3248,6 @@ void TACGenerator::emitMultiArrayAddress(const std::string& result, const std::s
         }
     }
     
-    // Final address calculation
     if (offset == "0") {
         outfile << result << " = &" << array << std::endl;
     } else {
@@ -3354,16 +3271,13 @@ void TACGenerator::emitMultiArrayStore(const std::string& array,
     
     if (indices.empty()) return;
     
-    // Pre-calculate strides
     std::vector<int> strides(dimensions.size(), element_size);
     for (int i = dimensions.size() - 2; i >= 0; i--) {
         strides[i] = strides[i + 1] * dimensions[i + 1];
     }
     
-    // Calculate offset step by step (proper TAC)
     std::string offset;
     
-    // Handle first term
     if (indices[0] == "0") {
         offset = "0";
     } else {
@@ -3371,9 +3285,8 @@ void TACGenerator::emitMultiArrayStore(const std::string& array,
         emit(offset, indices[0], "*", std::to_string(strides[0]));
     }
     
-    // Add remaining terms
     for (size_t i = 1; i < indices.size(); i++) {
-        if (indices[i] != "0") { // Skip if index is 0
+        if (indices[i] != "0") {
             std::string term = newTemp();
             emit(term, indices[i], "*", std::to_string(strides[i]));
             
@@ -3387,7 +3300,6 @@ void TACGenerator::emitMultiArrayStore(const std::string& array,
         }
     }
     
-    // Calculate address and store
     std::string addr_temp = newTemp();
     if (offset == "0") {
         outfile << addr_temp << " = &" << array << std::endl;
@@ -3450,30 +3362,25 @@ std::string TACGenerator::getOperationType(const std::string& type1, const std::
 }
 
 void initialize_builtin_functions() {
-    // printf: int printf(const char* format, ...)
     Symbol* printf_sym = new Symbol();
     printf_sym->name = "printf";
     printf_sym->kind = SK_FUNCTION;
     printf_sym->type = new Type("", TK_FUNCTION);
     printf_sym->type->return_type = new Type("int");
     
-    // First parameter: const char* format
     Type* format_type = new Type("char");
     format_type->is_const = true;
     format_type->pointer_level = 1;
     printf_sym->type->parameter_types.push_back(format_type);
     
-    // Variadic function (indicated by empty parameter name or special handling)
     install_symbol(printf_sym);
 
-    // scanf: int scanf(const char* format, ...)
     Symbol* scanf_sym = new Symbol();
     scanf_sym->name = "scanf";
     scanf_sym->kind = SK_FUNCTION;
     scanf_sym->type = new Type("", TK_FUNCTION);
     scanf_sym->type->return_type = new Type("int");
     
-    // First parameter: const char* format
     Type* scanf_format_type = new Type("char");
     scanf_format_type->is_const = true;
     scanf_format_type->pointer_level = 1;
@@ -3481,7 +3388,6 @@ void initialize_builtin_functions() {
     
     install_symbol(scanf_sym);
 
-    // malloc: void* malloc(size_t size)
     Symbol* malloc_sym = new Symbol();
     malloc_sym->name = "malloc";
     malloc_sym->kind = SK_FUNCTION;
@@ -3489,20 +3395,17 @@ void initialize_builtin_functions() {
     malloc_sym->type->return_type = new Type("void");
     malloc_sym->type->return_type->pointer_level = 1;
     
-    // Parameter: size_t size (we'll use unsigned int for simplicity)
     Type* size_type = new Type("unsigned int");
     malloc_sym->type->parameter_types.push_back(size_type);
     
     install_symbol(malloc_sym);
 
-    // free: void free(void* ptr)
     Symbol* free_sym = new Symbol();
     free_sym->name = "free";
     free_sym->kind = SK_FUNCTION;
     free_sym->type = new Type("", TK_FUNCTION);
     free_sym->type->return_type = new Type("void");
     
-    // Parameter: void* ptr
     Type* ptr_type = new Type("void");
     ptr_type->pointer_level = 1;
     free_sym->type->parameter_types.push_back(ptr_type);
@@ -3510,9 +3413,7 @@ void initialize_builtin_functions() {
     install_symbol(free_sym);
 }
 
-// Modify the main function to call the initialization
 int main(int argc, char** argv) {
-    // Initialize global scope and built-in functions
     enter_scope();
     initialize_builtin_functions();
     
@@ -3527,6 +3428,6 @@ int main(int argc, char** argv) {
     if (tac_gen) {
         delete tac_gen;
     }
-    exit_scope(); // Clean up global scope
+    exit_scope();
     return 0;
 }
