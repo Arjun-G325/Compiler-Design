@@ -20,6 +20,7 @@ private:
     std::vector<std::string> paramStack;
     std::string currentFunc;
     std::vector<std::string> scanfSubroutineBuffer;
+    std::vector<std::string> memorySubroutineBuffer;
     int labelCount;
     int stringConstCount;
     int floatConstCount;
@@ -85,6 +86,7 @@ public:
                           hasParserErrors(false) {
         initializeRegisters();
         scanfSubroutineBuffer.clear();
+        memorySubroutineBuffer.clear();
         
         // Initialize the set of SPIM keywords to avoid conflicts
         spimKeywords = {
@@ -2079,9 +2081,18 @@ void generateScanfSubroutines() {
     void convertMallocCall(int numArgs, const std::string& resultVar) {
         if (numArgs >= 1 && !paramStack.empty()) {
             std::string sizeVar = paramStack.back();
-            paramStack.pop_back(); // Important: remove from param stack
+            paramStack.pop_back();
             
-            // Handle literal size
+            output.push_back("    # malloc call for " + sizeVar + " bytes\n");
+            
+            // Save temporary registers
+            output.push_back("    addiu $sp, $sp, -16    # Save temp registers\n");
+            output.push_back("    sw $t0, 0($sp)\n");
+            output.push_back("    sw $t1, 4($sp)\n");
+            output.push_back("    sw $t2, 8($sp)\n");
+            output.push_back("    sw $t3, 12($sp)\n");
+            
+            // Load size argument
             if (std::regex_match(sizeVar, std::regex(R"(\d+)"))) {
                 output.push_back("    li $a0, " + sizeVar + "  # Load size literal\n");
             } else {
@@ -2089,8 +2100,14 @@ void generateScanfSubroutines() {
                 output.push_back("    move $a0, " + sizeReg + "  # Load size argument\n");
             }
             
-            output.push_back("    li $v0, 9           # sbrk syscall (malloc)\n");
-            output.push_back("    syscall\n");
+            output.push_back("    jal malloc\n");
+            
+            // Restore temporary registers
+            output.push_back("    lw $t0, 0($sp)\n");
+            output.push_back("    lw $t1, 4($sp)\n");
+            output.push_back("    lw $t2, 8($sp)\n");
+            output.push_back("    lw $t3, 12($sp)\n");
+            output.push_back("    addiu $sp, $sp, 16     # Restore temp registers\n");
             
             if (!resultVar.empty()) {
                 std::string resultReg = getRegisterForVar(resultVar, false, false);
@@ -2101,12 +2118,114 @@ void generateScanfSubroutines() {
     }
 
     void convertFreeCall(int numArgs) {
-        (void)numArgs;
-        output.push_back("    # free call - no-op in SPIM for sbrk memory\n");
+        if (numArgs >= 1 && !paramStack.empty()) {
+            std::string ptrVar = paramStack.back();
+            paramStack.pop_back();
+            
+            output.push_back("    # free call for pointer " + ptrVar + "\n");
+            
+            // Save temporary registers
+            output.push_back("    addiu $sp, $sp, -16    # Save temp registers\n");
+            output.push_back("    sw $t0, 0($sp)\n");
+            output.push_back("    sw $t1, 4($sp)\n");
+            output.push_back("    sw $t2, 8($sp)\n");
+            output.push_back("    sw $t3, 12($sp)\n");
+            
+            // Load pointer argument
+            std::string ptrReg = getRegisterForVar(ptrVar, false, true);
+            output.push_back("    move $a0, " + ptrReg + "  # Load pointer argument\n");
+            output.push_back("    jal free\n");
+            
+            // Restore temporary registers
+            output.push_back("    lw $t0, 0($sp)\n");
+            output.push_back("    lw $t1, 4($sp)\n");
+            output.push_back("    lw $t2, 8($sp)\n");
+            output.push_back("    lw $t3, 12($sp)\n");
+            output.push_back("    addiu $sp, $sp, 16     # Restore temp registers\n");
+        }
+    }
+
+    void generateMemorySubroutines() {
+        // Check if subroutines are already generated
+        static bool memorySubroutinesGenerated = false;
+        if (memorySubroutinesGenerated) return;
+        memorySubroutinesGenerated = true;
+
+        // Store the subroutines separately and add them at the end
+        std::vector<std::string> memorySubroutines;
+        
+        memorySubroutines.push_back("\n    #--------------------------------------");
+        memorySubroutines.push_back("    # malloc/free implementation with free list");
+        memorySubroutines.push_back("    #--------------------------------------");
+        
+        memorySubroutines.push_back("malloc:");
+        memorySubroutines.push_back("    # Align size to multiple of 4");
+        memorySubroutines.push_back("    addi $a0, $a0, 3");
+        memorySubroutines.push_back("    li   $t7, -4");
+        memorySubroutines.push_back("    and  $a0, $a0, $t7");
+        memorySubroutines.push_back("");
+        memorySubroutines.push_back("    # Add header size (8 bytes)");
+        memorySubroutines.push_back("    addi $a0, $a0, 8");
+        memorySubroutines.push_back("");
+        memorySubroutines.push_back("    # Search free list");
+        memorySubroutines.push_back("    la   $t0, free_list");
+        memorySubroutines.push_back("    lw   $t1, 0($t0)      # t1 = current block");
+        memorySubroutines.push_back("    move $t2, $zero       # t2 = prev block");
+        memorySubroutines.push_back("");
+        memorySubroutines.push_back("malloc_search:");
+        memorySubroutines.push_back("    beq  $t1, $zero, malloc_need_new   # no block found");
+        memorySubroutines.push_back("");
+        memorySubroutines.push_back("    lw   $t3, 0($t1)      # t3 = block.size");
+        memorySubroutines.push_back("    bge  $t3, $a0, malloc_use_block");
+        memorySubroutines.push_back("");
+        memorySubroutines.push_back("    # Move to next block");
+        memorySubroutines.push_back("    lw   $t1, 4($t1)");
+        memorySubroutines.push_back("    j    malloc_search");
+        memorySubroutines.push_back("");
+        memorySubroutines.push_back("malloc_use_block:");
+        memorySubroutines.push_back("    # Remove block from free list");
+        memorySubroutines.push_back("    lw   $t4, 4($t1)      # next free block");
+        memorySubroutines.push_back("    beq  $t2, $zero, malloc_update_head");
+        memorySubroutines.push_back("    sw   $t4, 4($t2)");
+        memorySubroutines.push_back("    j    malloc_return");
+        memorySubroutines.push_back("");
+        memorySubroutines.push_back("malloc_update_head:");
+        memorySubroutines.push_back("    sw   $t4, 0($t0)");
+        memorySubroutines.push_back("");
+        memorySubroutines.push_back("malloc_return:");
+        memorySubroutines.push_back("    addi $v0, $t1, 8      # return pointer after header");
+        memorySubroutines.push_back("    jr   $ra");
+        memorySubroutines.push_back("");
+        memorySubroutines.push_back("malloc_need_new:");
+        memorySubroutines.push_back("    # Request new memory using sbrk (syscall 9)");
+        memorySubroutines.push_back("    li   $v0, 9");
+        memorySubroutines.push_back("    syscall               # v0 = block pointer (header)");
+        memorySubroutines.push_back("");
+        memorySubroutines.push_back("    # Set header fields");
+        memorySubroutines.push_back("    move $t5, $v0");
+        memorySubroutines.push_back("    sw   $a0, 0($t5)      # size");
+        memorySubroutines.push_back("    sw   $zero, 4($t5)    # next pointer");
+        memorySubroutines.push_back("");
+        memorySubroutines.push_back("    addi $v0, $t5, 8      # return pointer to user data");
+        memorySubroutines.push_back("    jr   $ra");
+        memorySubroutines.push_back("");
+        memorySubroutines.push_back("free:");
+        memorySubroutines.push_back("    addi $t0, $a0, -8     # get header of block");
+        memorySubroutines.push_back("    la   $t1, free_list");
+        memorySubroutines.push_back("    lw   $t2, 0($t1)");
+        memorySubroutines.push_back("    sw   $t2, 4($t0)     # block->next = old free_list head");
+        memorySubroutines.push_back("    sw   $t0, 0($t1)     # free_list = block");
+        memorySubroutines.push_back("    jr   $ra");
+        
+        // Store the subroutines for later insertion at the end
+        memorySubroutineBuffer = memorySubroutines;
     }
 
     std::string generateDataSection() {
     std::string data = ".data\n";
+    
+    // Add free list for malloc/free
+    data += "free_list: .word 0          # head of free list\n";
     
     // String constants
     for (const auto& strConst : stringConstants) {
@@ -2228,7 +2347,15 @@ void generateScanfSubroutines() {
         for (const std::string& line : output) {
             textSection += line;
         }
+        
+        // Add scanf subroutines
         for (const std::string& line : scanfSubroutineBuffer) {
+            textSection += line + "\n";
+        }
+        
+        // Add memory management subroutines
+        generateMemorySubroutines();
+        for (const std::string& line : memorySubroutineBuffer) {
             textSection += line + "\n";
         }
     }
