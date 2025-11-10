@@ -426,6 +426,10 @@ std::vector<Type*> get_printf_specifier_types(const std::string& format_string) 
                     types.push_back(new Type("int"));
                     i++;
                 }
+                else if (format_string[i+1] == 'c') {
+                    types.push_back(new Type("int")); // %c expects int (char promoted)
+                    i++;
+                }
                 // Check for %f
                 else if (format_string[i+1] == 'f') {
                     // Note: C promotes floats to doubles in variadic functions
@@ -455,54 +459,104 @@ std::vector<Type*> get_printf_specifier_types(const std::string& format_string) 
 /**
  * @brief Parses a scanf format string and returns a vector of expected pointer types.
  */
+/**
+ * @brief Parses a scanf format string and returns a vector of expected pointer types.
+ */
 std::vector<Type*> get_scanf_specifier_types(const std::string& format_string) {
     std::vector<Type*> types;
+    bool in_specifier = false;
+    std::string current_specifier;
+    
     for (size_t i = 0; i < format_string.length(); ++i) {
         if (format_string[i] == '%') {
-            if (i + 1 < format_string.length()) {
-                if (format_string[i+1] == '%') {
-                    i++; // Skip '%%'
-                    continue;
-                }
-
-                // Check for %lf
-                if (i + 2 < format_string.length() && format_string.substr(i+1, 2) == "lf") {
-                    Type* t = new Type("double");
-                    t->pointer_level = 1; // %lf expects double*
-                    types.push_back(t);
-                    i += 2;
-                }
-                // Check for %d
-                else if (format_string[i+1] == 'd') {
-                    Type* t = new Type("int");
-                    t->pointer_level = 1; // %d expects int*
-                    types.push_back(t);
-                    i++;
-                }
-                // Check for %f
-                else if (format_string[i+1] == 'f') {
-                    Type* t = new Type("float"); // %f expects float* (no promotion)
-                    t->pointer_level = 1;
-                    types.push_back(t);
-                    i++;
-                }
-                // Check for %s
-                else if (format_string[i+1] == 's') {
-                    Type* t = new Type("char");
-                    t->pointer_level = 1; // %s expects char*
-                    types.push_back(t);
-                    i++;
-                }
-                // Check for %p
-                else if (format_string[i+1] == 'p') {
-                    Type* t = new Type("void");
-                    t->pointer_level = 2; // %p expects void**
-                    types.push_back(t);
-                    i++;
-                }
+            if (in_specifier) {
+                // Previous specifier wasn't properly terminated
+                yyerror("Invalid format specifier in scanf");
+            }
+            in_specifier = true;
+            current_specifier = "%";
+        } 
+        else if (in_specifier) {
+            current_specifier += format_string[i];
+            
+            // Check if this completes a valid specifier
+            if (format_string[i] == 'd' || format_string[i] == 'i') {
+                Type* t = new Type("int");
+                t->pointer_level = 1; // %d expects int*
+                types.push_back(t);
+                in_specifier = false;
+                current_specifier.clear();
+            }
+            else if (format_string[i] == 'f') {
+                Type* t = new Type("float");
+                t->pointer_level = 1; // %f expects float*
+                types.push_back(t);
+                in_specifier = false;
+                current_specifier.clear();
+            }
+            else if (format_string[i] == 'c') {
+                Type* t = new Type("char");
+                t->pointer_level = 1; // %c expects char*
+                types.push_back(t);
+                in_specifier = false;
+                current_specifier.clear();
+            }
+            else if (format_string[i] == 's') {
+                Type* t = new Type("char");
+                t->pointer_level = 1; // %s expects char*
+                types.push_back(t);
+                in_specifier = false;
+                current_specifier.clear();
+            }
+            else if (format_string[i] == 'p') {
+                Type* t = new Type("void");
+                t->pointer_level = 2; // %p expects void**
+                types.push_back(t);
+                in_specifier = false;
+                current_specifier.clear();
+            }
+            else if (i + 1 < format_string.length() && 
+                     current_specifier == "%l" && format_string[i+1] == 'f') {
+                // Handle %lf
+                Type* t = new Type("double");
+                t->pointer_level = 1; // %lf expects double*
+                types.push_back(t);
+                i++; // Skip the 'f'
+                in_specifier = false;
+                current_specifier.clear();
+            }
+            else if (format_string[i] == '%') {
+                // Handle %% (literal percent)
+                in_specifier = false;
+                current_specifier.clear();
+            }
+            else if (isspace(format_string[i])) {
+                // Space terminates the format specifier (invalid in scanf)
+                yyerror("Unexpected space in scanf format specifier");
+                in_specifier = false;
+                current_specifier.clear();
+            }
+            // If we reach the end and still have an incomplete specifier
+            else if (i == format_string.length() - 1) {
+                yyerror("Incomplete format specifier in scanf");
+                in_specifier = false;
+                current_specifier.clear();
             }
         }
+        else if (!isspace(format_string[i])) {
+            // Any non-whitespace, non-% character outside a specifier is invalid for scanf
+            std::string error_msg = "Invalid character '";
+            error_msg += format_string[i];
+            error_msg += "' in scanf format string (only format specifiers and spaces allowed)";
+            yyerror(error_msg.c_str());
+        }
+        // Spaces between specifiers are allowed and ignored
     }
+    
+    if (in_specifier) {
+        yyerror("Unterminated format specifier in scanf");
+    }
+    
     return types;
 }
 
