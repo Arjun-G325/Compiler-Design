@@ -78,6 +78,14 @@ private:
         return name;
     }
 
+    // Check if a variable name is temporary (i0,i1,f2,t3,etc)
+    bool isTemporaryVar(const std::string& var) {
+        if (var.empty()) return false;
+        char firstChar = var[0];
+        return (firstChar == 'i' || firstChar == 'f' || firstChar == 't') && 
+               var.length() > 1 && isdigit(var[1]);
+    }
+
 public:
     TACToSPIMConverter() : labelCount(0), stringConstCount(0), floatConstCount(0), 
                           tempVarCount(0), stackOffset(0), argStackOffset(0), useCounter(0),
@@ -375,13 +383,8 @@ public:
 
     void spillVariable(const std::string& reg, const std::string& var) {
         // Don't spill temporary variables
-        if (var.empty() || var[0] == 't' || var[0] == 'i' || var[0] == 'f') {
-             // Check for temp float 'f' as well
-            if (var[0] == 'f' && var.length() > 1 && isdigit(var[1])) {
-                 return;
-            } else if (var[0] != 'f') {
-                return;
-            }
+        if (isTemporaryVar(var)) {
+            return;
         }
         
         if (variableInfo.find(var) == variableInfo.end()) {
@@ -444,7 +447,7 @@ public:
             variableInfo[var] = VariableInfo({}, -1, false, isFloatVar(var), false, "");
         }
         
-        if (variableInfo[var].stackOffset == -1 && !var.empty() && var[0] != 't' && var[0] != 'i') {
+        if (variableInfo[var].stackOffset == -1 && !isTemporaryVar(var)) {
             // Only allocate for non-temporary variables
             variableInfo[var].stackOffset = stackOffset;
             stackOffset -= 4; 
@@ -473,7 +476,7 @@ public:
     }
 
     void invalidateTempRegisters() {
-        // Invalidate ALL integer $t registers
+        // Invalidate all integer $t registers
         for (const auto& reg : availableIntRegs) {
             std::set<std::string> vars = intRegisters[reg].varNames;
             if (!vars.empty()) {
@@ -486,7 +489,7 @@ public:
             }
         }
         
-        // Invalidate ALL float $t registers
+        // Invalidate all float $t registers
         for (const auto& reg : availableFloatRegs) {
             std::set<std::string> vars = floatRegisters[reg].varNames;
             if (!vars.empty()) {
@@ -735,7 +738,7 @@ public:
         return "# " + line + "\n";
     }
 
-    // Handle array load operations like "i1 = *t2"
+    // Handle array load operations
     std::regex arrayLoadRegex(R"((\w+)\s*=\s*\*(\w+))");
     std::smatch arrayLoadMatch;
     if (std::regex_search(line, arrayLoadMatch, arrayLoadRegex)) {
@@ -753,7 +756,7 @@ public:
         return "# " + line + "\n";
     }
 
-    // Handle array store operations like "*t4 = 5"  
+    // Handle array store operations
     std::regex arrayStoreSimpleRegex(R"(\*(\w+)\s*=\s*([\w\.-]+))");
     std::smatch arrayStoreSimpleMatch;
     if (std::regex_search(line, arrayStoreSimpleMatch, arrayStoreSimpleRegex)) {
@@ -765,8 +768,8 @@ public:
         
         // Store the value
         if (std::regex_match(value, std::regex(R"(\d+)"))) {
-            output.push_back("    li $t8, " + value + "  # Load immediate value\n");
-            output.push_back("    sw $t8, 0(" + ptrReg + ")  # Store value via pointer\n");
+            output.push_back("    li $t9, " + value + "  # Load immediate value\n");
+            output.push_back("    sw $t9, 0(" + ptrReg + ")  # Store value via pointer\n");
         } else {
             std::string valueReg = getRegisterForVar(value, false, true);
             output.push_back("    sw " + valueReg + ", 0(" + ptrReg + ")  # Store value via pointer\n");
@@ -775,7 +778,7 @@ public:
         return "# " + line + "\n";
     }
 
-    // Handle pointer arithmetic patterns like "t2 = &c + t3"
+    // Handle pointer arithmetic patterns
     std::regex ptrArithmeticRegex(R"((\w+)\s*=\s*&(\w+)\s*\+\s*(\w+))");
     std::smatch ptrMatch;
     if (std::regex_search(line, ptrMatch, ptrArithmeticRegex)) {
@@ -784,7 +787,16 @@ public:
         std::string offset = ptrMatch[3];
         
         std::string baseReg = getRegisterForVar(base, false, true);
-        std::string offsetReg = getRegisterForVar(offset, false, true);
+        std::string offsetReg;
+        
+        // Handle offset - always load into register if literal
+        if (std::regex_match(offset, std::regex(R"(\d+)"))) {
+            offsetReg = "$t9";
+            output.push_back("    li " + offsetReg + ", " + offset + " # Load offset literal\n");
+        } else {
+            offsetReg = getRegisterForVar(offset, false, true);
+        }
+        
         std::string destReg = getRegisterForVar(dest, false, false);
         
         output.push_back("    add " + destReg + ", " + baseReg + ", " + offsetReg + " # Pointer arithmetic\n");
@@ -793,7 +805,7 @@ public:
         return "# " + line + "\n";
     }
 
-    // Handle array indexing operations like "i1 = *t2"
+    // Handle array indexing operations
     std::regex arrayIndexRegex(R"((\w+)\s*=\s*\*\(\s*(\w+)\s*\+\s*([^)]+)\s*\))");
     std::smatch arrayMatch;
     if (std::regex_search(line, arrayMatch, arrayIndexRegex)) {
@@ -808,25 +820,27 @@ public:
         
         // Calculate offset
         if (std::regex_match(index, std::regex(R"(\d+)"))) {
-            // Literal offset
-            int offset = std::stoi(index);
-            output.push_back("    addiu $t9, " + baseReg + ", " + std::to_string(offset) + "  # Calculate address\n");
+            // Literal offset - always load into register first and multiply by 4
+            int offsetVal = std::stoi(index);
+            output.push_back("    li $t9, " + std::to_string(offsetVal) + " # Load index literal\n");
+            output.push_back("    sll $t9, $t9, 2  # Multiply index by 4\n");
+            output.push_back("    add $t8, " + baseReg + ", $t9  # Calculate address\n");
         } else {
-            // Variable offset - multiply by 4 for word size
+            // Variable offset - multiply by 4
             std::string indexReg = getRegisterForVar(index, false, true);
-            output.push_back("    sll $t8, " + indexReg + ", 2  # Multiply index by 4\n");
-            output.push_back("    add $t9, " + baseReg + ", $t8  # Calculate address\n");
+            output.push_back("    sll $t9, " + indexReg + ", 2  # Multiply index by 4\n");
+            output.push_back("    add $t8, " + baseReg + ", $t9  # Calculate address\n");
         }
         
         // Load value
         std::string destReg = getRegisterForVar(dest, false, false);
-        output.push_back("    lw " + destReg + ", 0($t9)  # Load array element\n");
+        output.push_back("    lw " + destReg + ", 0($t8)  # Load array element\n");
         markDirty(dest, destReg);
         
         return "# " + line + "\n";
     }
 
-    // Handle array store operations like "*t4 = 5"
+    // Handle array store operations
     std::regex arrayStoreRegex(R"(\*\(\s*(\w+)\s*\+\s*([^)]+)\s*\)\s*=\s*([\w\.-]+))");
     std::smatch arrayStoreMatch;
     if (std::regex_search(line, arrayStoreMatch, arrayStoreRegex)) {
@@ -841,21 +855,24 @@ public:
         
         // Calculate offset
         if (std::regex_match(index, std::regex(R"(\d+)"))) {
-            int offset = std::stoi(index);
-            output.push_back("    addiu $t9, " + baseReg + ", " + std::to_string(offset) + "  # Calculate address\n");
+            // Literal offset - always load into register first and multiply by 4
+            int offsetVal = std::stoi(index);
+            output.push_back("    li $t9, " + std::to_string(offsetVal) + " # Load index literal\n");
+            output.push_back("    sll $t9, $t9, 2  # Multiply index by 4\n");
+            output.push_back("    add $t8, " + baseReg + ", $t9  # Calculate address\n");
         } else {
             std::string indexReg = getRegisterForVar(index, false, true);
-            output.push_back("    sll $t8, " + indexReg + ", 2  # Multiply index by 4\n");
-            output.push_back("    add $t9, " + baseReg + ", $t8  # Calculate address\n");
+            output.push_back("    sll $t9, " + indexReg + ", 2  # Multiply index by 4\n");
+            output.push_back("    add $t8, " + baseReg + ", $t9  # Calculate address\n");
         }
         
         // Store value
         if (std::regex_match(value, std::regex(R"(\d+)"))) {
-            output.push_back("    li $t8, " + value + "  # Load immediate value\n");
-            output.push_back("    sw $t8, 0($t9)  # Store array element\n");
+            output.push_back("    li $t9, " + value + "  # Load immediate value\n");
+            output.push_back("    sw $t9, 0($t8)  # Store array element\n");
         } else {
             std::string valueReg = getRegisterForVar(value, false, true);
-            output.push_back("    sw " + valueReg + ", 0($t9)  # Store array element\n");
+            output.push_back("    sw " + valueReg + ", 0($t8)  # Store array element\n");
         }
         
         return "# " + line + "\n";
@@ -948,14 +965,16 @@ public:
                 std::string destReg = getRegisterForVar(dest, false, false);
                 
                 if (std::regex_match(index, std::regex(R"(\d+)"))) {
-                    // Literal index
-                    int offset = std::stoi(index) * 4;
-                    output.push_back("    addiu " + destReg + ", " + arrayReg + ", " + std::to_string(offset) + " # &" + arrayName + "[" + index + "]\n");
+                    // Literal index - always load into register first and multiply by 4
+                    int offsetVal = std::stoi(index);
+                    output.push_back("    li $t9, " + std::to_string(offsetVal) + " # Load index literal\n");
+                    output.push_back("    sll $t9, $t9, 2  # Multiply index by 4\n");
+                    output.push_back("    add " + destReg + ", " + arrayReg + ", $t9  # &" + arrayName + "[" + index + "]\n");
                 } else {
-                    // Variable index
+                    // Variable index - multiply by 4
                     std::string indexReg = getRegisterForVar(index, false, true);
-                    output.push_back("    sll $t8, " + indexReg + ", 2  # Multiply index by 4\n");
-                    output.push_back("    add " + destReg + ", " + arrayReg + ", $t8  # &" + arrayName + "[" + index + "]\n");
+                    output.push_back("    sll $t9, " + indexReg + ", 2  # Multiply index by 4\n");
+                    output.push_back("    add " + destReg + ", " + arrayReg + ", $t9  # &" + arrayName + "[" + index + "]\n");
                 }
                 
                 markDirty(dest, destReg);
@@ -974,7 +993,7 @@ public:
                 output.push_back("    la " + destReg + ", " + sanitizeName(varName) + "  # " + line);
             }
             else {
-                // orce allocation
+                // Force allocation
                 allocateStackSpace(varName);
                 
                 // Spill if dirty
@@ -1023,7 +1042,7 @@ public:
             if (isDestFloat) {
                 output.push_back("    l.s " + destReg + ", " + floatLabel + " # " + dest + " = " + src + "\n");
             } else {
-                std::string tempFloatReg = "$f31"; 
+                std::string tempFloatReg = "$f30"; 
                 output.push_back("    l.s " + tempFloatReg + ", " + floatLabel + "\n");
                 output.push_back("    trunc.w.s " + tempFloatReg + ", " + tempFloatReg + "\n");
                 output.push_back("    mfc1 " + destReg + ", " + tempFloatReg + " # " + dest + " = (int)" + src + "\n");
@@ -1034,8 +1053,8 @@ public:
         else if (std::regex_match(src, std::regex(R"(-?\d+)"))) {
             std::string destReg = getRegisterForVar(dest, isDestFloat, false);
             if (isDestFloat) {
-                std::string tempIntReg = "$v1";
-                output.push_back("    li " + tempIntReg + ", " + src + "\n");
+                std::string tempIntReg = "$t9";
+                output.push_back("    li " + tempIntReg + ", " + src + " # Load literal " + src + "\n");
                 output.push_back("    mtc1 " + tempIntReg + ", " + destReg + " # " + dest + " = " + src + ".0\n");
                 output.push_back("    cvt.s.w " + destReg + ", " + destReg + "\n");
             } else {
@@ -1048,8 +1067,8 @@ public:
             std::string destReg = getRegisterForVar(dest, isDestFloat, false);
             char c = src[1];
             if (isDestFloat) {
-                std::string tempIntReg = "$v1";
-                output.push_back("    li " + tempIntReg + ", " + std::to_string((int)c) + "\n");
+                std::string tempIntReg = "$t9";
+                output.push_back("    li " + tempIntReg + ", " + std::to_string((int)c) + " # Load char literal\n");
                 output.push_back("    mtc1 " + tempIntReg + ", " + destReg + " # " + dest + " = (float)'" + c + "'\n");
                 output.push_back("    cvt.s.w " + destReg + ", " + destReg + "\n");
             } else {
@@ -1260,14 +1279,25 @@ public:
     void convertIntOperation(const std::string& dest, const std::string& left, const std::string& op, const std::string& right) {
     bool isFloat = false;
     std::string destReg = getRegisterForVar(dest, isFloat, false);
-    std::string leftReg = getRegisterForVar(left, isFloat, true);
     
-    std::string rightReg;
+    // Always load left operand into register first
+    std::string leftReg;
+    if (std::regex_match(left, std::regex(R"(-?\d+)"))) {
+        // Left is literal - load into temporary register
+        leftReg = "$t9"; // Use reserved temp register
+        output.push_back("    li " + leftReg + ", " + left + " # Load literal " + left + "\n");
+    } else {
+        // Left is variable - get its register
+        leftReg = getRegisterForVar(left, isFloat, true);
+    }
+    
+    // Handle right operand
     bool rightIsLiteral = std::regex_match(right, std::regex(R"(-?\d+)"));
-
+    std::string rightReg;
+    
     std::string opCode;
     if (op == "+") opCode = rightIsLiteral ? "addiu" : "addu";
-    else if (op == "-") opCode = rightIsLiteral ? "addiu" : "subu"; // addiu dest, src, -literal
+    else if (op == "-") opCode = rightIsLiteral ? "addiu" : "subu";
     else if (op == "*") opCode = "mul";
     else if (op == "/") opCode = "div";
     else if (op == "&") opCode = rightIsLiteral ? "andi" : "and";
@@ -1279,7 +1309,6 @@ public:
     if (rightIsLiteral) {
         std::string rightVal = right;
         if (op == "-") {
-            // MIPS doesn't have 'subi', so we use 'addi' with a negated literal
             try {
                 rightVal = std::to_string(-std::stoi(right));
             } catch (...) { rightVal = "0"; }
@@ -1287,22 +1316,22 @@ public:
         }
         
         if (opCode == "sll" || opCode == "srl") {
+            // For shift operations with literals, use the literal directly
             output.push_back("    " + opCode + " " + destReg + ", " + leftReg + ", " + rightVal + " # " + dest + " = " + left + " " + op + " " + right + "\n");
         } else {
+            // For other operations, use the left register and literal directly
             output.push_back("    " + opCode + " " + destReg + ", " + leftReg + ", " + rightVal + " # " + dest + " = " + left + " " + op + " " + right + "\n");
         }
     } 
     else {
+        // Right is variable
         rightReg = getRegisterForVar(right, isFloat, true);
         if (op == "*") {
-            // Use 3-operand mul instruction
-            output.push_back("    mul " + destReg + ", " + leftReg + ", " + rightReg + " # " + dest + " = " + left + " * " + right + "\n");
+            output.push_back("    mul " + destReg + ", " + leftReg + ", " + rightReg + " # " + dest + " = " + left + " " + op + " " + right + "\n");
         } else if (op == "/") {
-            // Correct division syntax
-            output.push_back("    div " + leftReg + ", " + rightReg + " # " + dest + " = " + left + " / " + right + "\n");
+            output.push_back("    div " + leftReg + ", " + rightReg + " # " + dest + " = " + left + " " + op + " " + right + "\n");
             output.push_back("    mflo " + destReg + "\n");
         } else if (op == "sllv" || op == "srlv") {
-            // Shift variable operations
             output.push_back("    " + opCode + " " + destReg + ", " + leftReg + ", " + rightReg + " # " + dest + " = " + left + " " + op + " " + right + "\n");
         } else {
             output.push_back("    " + opCode + " " + destReg + ", " + leftReg + ", " + rightReg + " # " + dest + " = " + left + " " + op + " " + right + "\n");
@@ -1314,23 +1343,42 @@ public:
     void convertFloatOperation(const std::string& dest, const std::string& left, const std::string& op, const std::string& right) {
         bool isFloat = true;
         std::string destReg = getRegisterForVar(dest, isFloat, false);
-        std::string leftReg = getRegisterForVar(left, isFloat, true);
         
-        std::string rightReg;
-        
-        if (std::regex_match(right, std::regex(R"(-?\d+\.\d+)"))) {
-            std::string floatLabel = getFloatConstant(right);
-            rightReg = "$f31"; // Use reserved temp
-            output.push_back("    l.s " + rightReg + ", " + floatLabel + " # Load literal " + right + "\n");
-        } 
-        else if (std::regex_match(right, std::regex(R"(-?\d+)"))) {
-             rightReg = "$f31";
-             std::string tempIntReg = "$v1";
-             output.push_back("    li " + tempIntReg + ", " + right + "\n");
-             output.push_back("    mtc1 " + tempIntReg + ", " + rightReg + "\n");
-             output.push_back("    cvt.s.w " + rightReg + ", " + rightReg + " # Convert literal " + right + " to float\n");
+        // Handle left operand - always load into register
+        std::string leftReg;
+        if (std::regex_match(left, std::regex(R"(-?\d+\.\d+)"))) {
+            // Left is float literal
+            std::string floatLabel = getFloatConstant(left);
+            leftReg = "$f30"; // Use reserved temp float register
+            output.push_back("    l.s " + leftReg + ", " + floatLabel + " # Load literal " + left + "\n");
+        } else if (std::regex_match(left, std::regex(R"(-?\d+)"))) {
+            // Left is integer literal
+            leftReg = "$f30";
+            std::string tempIntReg = "$t9";
+            output.push_back("    li " + tempIntReg + ", " + left + " # Load literal " + left + "\n");
+            output.push_back("    mtc1 " + tempIntReg + ", " + leftReg + "\n");
+            output.push_back("    cvt.s.w " + leftReg + ", " + leftReg + " # Convert literal to float\n");
+        } else {
+            // Left is variable
+            leftReg = getRegisterForVar(left, isFloat, true);
         }
-        else {
+        
+        // Handle right operand - always load into register  
+        std::string rightReg;
+        if (std::regex_match(right, std::regex(R"(-?\d+\.\d+)"))) {
+            // Right is float literal
+            std::string floatLabel = getFloatConstant(right);
+            rightReg = "$f28"; // Use another temp float register
+            output.push_back("    l.s " + rightReg + ", " + floatLabel + " # Load literal " + right + "\n");
+        } else if (std::regex_match(right, std::regex(R"(-?\d+)"))) {
+            // Right is integer literal
+            rightReg = "$f28";
+            std::string tempIntReg = "$t9";
+            output.push_back("    li " + tempIntReg + ", " + right + " # Load literal " + right + "\n");
+            output.push_back("    mtc1 " + tempIntReg + ", " + rightReg + "\n");
+            output.push_back("    cvt.s.w " + rightReg + ", " + rightReg + " # Convert literal to float\n");
+        } else {
+            // Right is variable
             rightReg = getRegisterForVar(right, isFloat, true);
         }
 
@@ -1346,7 +1394,15 @@ public:
 
     void convertIntComparison(const std::string& dest, const std::string& left, const std::string& op, const std::string& right) {
     std::string destReg = getRegisterForVar(dest, false, false);
-    std::string leftReg = getRegisterForVar(left, false, true);
+    
+    // Handle left operand - always load into register first
+    std::string leftReg;
+    if (std::regex_match(left, std::regex(R"(-?\d+)"))) {
+        leftReg = "$t9";
+        output.push_back("    li " + leftReg + ", " + left + " # Load literal " + left + "\n");
+    } else {
+        leftReg = getRegisterForVar(left, false, true);
+    }
     
     if (std::regex_match(right, std::regex(R"(-?\d+)"))) {
         // Handle literal comparisons
@@ -1354,27 +1410,27 @@ public:
             output.push_back("    slti " + destReg + ", " + leftReg + ", " + right + " # " + dest + " = " + left + " < " + right + "\n");
         } else if (op == "<=") {
             // slti + equality check
-            std::string tempReg = (leftReg == "$t0") ? "$t1" : "$t0";
+            std::string tempReg = "$t9";
             output.push_back("    slti " + destReg + ", " + leftReg + ", " + std::to_string(std::stoi(right) + 1) + " # " + dest + " = " + left + " <= " + right + "\n");
         } else if (op == ">") {
             // Use slt with swapped operands
-            std::string tempReg = "$v1";
-            output.push_back("    li " + tempReg + ", " + right + "\n");
+            std::string tempReg = "$t9";
+            output.push_back("    li " + tempReg + ", " + right + " # Load literal " + right + "\n");
             output.push_back("    slt " + destReg + ", " + tempReg + ", " + leftReg + " # " + dest + " = " + left + " > " + right + "\n");
         } else if (op == ">=") {
             // slt + invert
-            std::string tempReg = "$v1";
-            output.push_back("    li " + tempReg + ", " + right + "\n");
+            std::string tempReg = "$t9";
+            output.push_back("    li " + tempReg + ", " + right + " # Load literal " + right + "\n");
             output.push_back("    slt " + destReg + ", " + leftReg + ", " + tempReg + " # " + dest + " = " + left + " < " + right + "\n");
             output.push_back("    xori " + destReg + ", " + destReg + ", 1 # Invert to get >= " + right + "\n");
         } else if (op == "==") {
-            std::string tempReg = "$v1";
-            output.push_back("    li " + tempReg + ", " + right + "\n");
+            std::string tempReg = "$t9";
+            output.push_back("    li " + tempReg + ", " + right + " # Load literal " + right + "\n");
             output.push_back("    xor " + destReg + ", " + leftReg + ", " + tempReg + " # " + dest + " = " + left + " == " + right + "\n");
             output.push_back("    sltiu " + destReg + ", " + destReg + ", 1 # Set to 1 if equal\n");
         } else if (op == "!=") {
-            std::string tempReg = "$v1";
-            output.push_back("    li " + tempReg + ", " + right + "\n");
+            std::string tempReg = "$t9";
+            output.push_back("    li " + tempReg + ", " + right + " # Load literal " + right + "\n");
             output.push_back("    xor " + destReg + ", " + leftReg + ", " + tempReg + " # " + dest + " = " + left + " != " + right + "\n");
             output.push_back("    sltu " + destReg + ", $zero, " + destReg + " # Set to 1 if not equal\n");
         }
@@ -1404,13 +1460,34 @@ public:
 }
     
     void convertFloatComparison(const std::string& dest, const std::string& left, const std::string& op, const std::string& right) {
-        std::string leftReg = getRegisterForVar(left, true, true);
-        std::string rightReg;
+        // Handle left operand - always load into register
+        std::string leftReg;
+        if (std::regex_match(left, std::regex(R"(-?\d+\.\d+)"))) {
+            std::string floatLabel = getFloatConstant(left);
+            leftReg = "$f30";
+            output.push_back("    l.s " + leftReg + ", " + floatLabel + " # Load literal " + left + "\n");
+        } else if (std::regex_match(left, std::regex(R"(-?\d+)"))) {
+            leftReg = "$f30";
+            std::string tempIntReg = "$t9";
+            output.push_back("    li " + tempIntReg + ", " + left + " # Load literal " + left + "\n");
+            output.push_back("    mtc1 " + tempIntReg + ", " + leftReg + "\n");
+            output.push_back("    cvt.s.w " + leftReg + ", " + leftReg + " # Convert literal to float\n");
+        } else {
+            leftReg = getRegisterForVar(left, true, true);
+        }
         
+        // Handle right operand - always load into register
+        std::string rightReg;
         if (std::regex_match(right, std::regex(R"(-?\d+\.\d+)"))) {
             std::string floatLabel = getFloatConstant(right);
-            rightReg = "$f31"; // Use reserved temp
+            rightReg = "$f28";
             output.push_back("    l.s " + rightReg + ", " + floatLabel + " # Load literal " + right + "\n");
+        } else if (std::regex_match(right, std::regex(R"(-?\d+)"))) {
+            rightReg = "$f28";
+            std::string tempIntReg = "$t9";
+            output.push_back("    li " + tempIntReg + ", " + right + " # Load literal " + right + "\n");
+            output.push_back("    mtc1 " + tempIntReg + ", " + rightReg + "\n");
+            output.push_back("    cvt.s.w " + rightReg + ", " + rightReg + " # Convert literal to float\n");
         } else {
             rightReg = getRegisterForVar(right, true, true);
         }
@@ -1512,7 +1589,8 @@ public:
                 if (isFloat && floatArgCount < (int)argFloatRegs.size()) {
                     output.push_back("    mov.s " + argFloatRegs[floatArgCount++] + ", " + argReg + "  # Float argument " + std::to_string(i+1) + "\n");
                 } else if (!isFloat && intArgCount < (int)argIntRegs.size()) {
-                    output.push_back("    move " + argIntRegs[intArgCount++] + ", " + argReg + "  # Integer argument " + std::to_string(i+1) + "\n");
+                    std::string reg = argIntRegs[intArgCount++];
+                    output.push_back("    move " + reg + ", " + argReg + "  # Integer argument " + std::to_string(i+1) + "\n");
                 } else {
                     // Argument goes on the stack
                     int stackOffset = stackArgCount * 4;
