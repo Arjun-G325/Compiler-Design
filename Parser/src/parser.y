@@ -8,13 +8,20 @@
 #include <cmath>
 #include <sstream>
 #include <iomanip>
-
+#include <algorithm>
+#include <cctype>    
 class TACGenerator {
 private:
     std::ofstream outfile;
     int temp_count;
     int label_count;
-    
+     bool isConstantValue(const std::string& value);
+    std::string foldBinaryOperation(const std::string& arg1, const std::string& op, const std::string& arg2, const std::string& type);
+    std::string foldUnaryOperation(const std::string& op, const std::string& arg, const std::string& type);
+
+public:
+    std::string tryConstantFoldBinary(const std::string& arg1, const std::string& op, const std::string& arg2, const std::string& type);
+    std::string tryConstantFoldUnary(const std::string& op, const std::string& arg, const std::string& type);
 public:
     TACGenerator(const std::string& filename);
     ~TACGenerator();
@@ -349,23 +356,23 @@ void handleMultiDimArrayInitialization(const std::string& array_name,
                                      int element_size,
                                      std::vector<int> current_indices,
                                      int current_dim) {
-    if (current_dim >= dimensions.size()) return;
+    if (current_dim >= (int)dimensions.size()) return;
     
     int current_dim_size = dimensions[current_dim];
     
-    for (int i = 0; i < current_dim_size && i < initializers->size(); i++) {
+    for (int i = 0; i < current_dim_size && i < (int)initializers->size(); i++) {
         auto item = (*initializers)[i];
         std::vector<int> new_indices = current_indices;
         new_indices.push_back(i);
         
-        if (item->is_list && current_dim + 1 < dimensions.size()) {
+        if (item->is_list && current_dim + 1 < (int)dimensions.size()) {
             handleMultiDimArrayInitialization(array_name, item->list, dimensions,
                                             element_size, new_indices, current_dim + 1);
         } else if (!item->is_list && item->expr && item->expr->tac_var != "") {
             int linear_index = 0;
             int stride = 1;
             
-            for (int dim = dimensions.size() - 1; dim >= 0; dim--) {
+            for (int dim = (int)dimensions.size() - 1; dim >= 0; dim--) {
                 linear_index += new_indices[dim] * stride;
                 if (dim > 0) {
                     stride *= dimensions[dim];
@@ -1078,7 +1085,7 @@ init_declarator
     std::vector<InitializerItem*>* initializers = $3;
     
     if (!sym->type->array_dimensions.empty()) {
-       
+        tac_gen->emitComment("Array initialization: " + sym->name);
         
         int element_size = 4;
         if (sym->type->base_type == "float") element_size = 4;
@@ -1097,7 +1104,7 @@ init_declarator
                 yyerror(("too many initializers for array of size " + to_string(array_size)).c_str());
             }
             
-            for (int i = 0; i < initializers->size(); i++) {
+            for (size_t i = 0; i < initializers->size(); i++) {
                 auto item = (*initializers)[i];
                 if (!item->is_list && item->expr && !item->expr->tac_var.empty()) {
                     tac_gen->emitArrayStore(sym->name, to_string(i), 
@@ -1480,7 +1487,7 @@ selection_statement
           ExprResult* cond = $3;
           string false_label = tac_gen->newLabel();
           
-          if_stack.push({false_label, ""});
+         if_stack.push(std::make_pair(false_label, ""));
           
           if (!cond->tac_var.empty()) {
               tac_gen->emitIfFalseGoto(cond->tac_var, false_label);
@@ -1494,7 +1501,13 @@ selection_statement
           g_switch_depth++;
           ExprResult* switch_expr = $3;
           string end_label = tac_gen->newLabel();
-          control_stack.push({end_label, ""}); 
+         ControlLabels labels;
+labels.break_label = end_label;
+labels.continue_label = "";
+labels.cond_label = "";
+labels.body_label = "";
+labels.incr_expr = nullptr;
+control_stack.push(labels);
           tac_gen->emitComment("Switch expression");
           delete switch_expr;
       } 
@@ -1523,7 +1536,7 @@ else_handler:
         
         string end_label = tac_gen->newLabel();
         
-        if_stack.push({false_label, end_label});
+        if_stack.push(std::make_pair(false_label, end_label));
         
         tac_gen->emitGoto(end_label);
         tac_gen->emitLabel(false_label);
@@ -1540,7 +1553,14 @@ iteration_statement
     : WHILE LPAREN {
         string begin_label = tac_gen->newLabel();
         string end_label = tac_gen->newLabel();
-        control_stack.push({end_label, begin_label});
+        ControlLabels labels;
+labels.break_label = end_label;
+labels.continue_label = begin_label;
+labels.cond_label = "";
+labels.body_label = "";
+labels.incr_expr = nullptr;
+control_stack.push(labels);
+
         tac_gen->emitLabel(begin_label);
     } expression RPAREN {
         g_loop_depth++;
@@ -1567,7 +1587,13 @@ iteration_statement
         if ($3) delete $3;
         
         tac_gen->emitLabel(cond_label);
-        control_stack.push({end_label, continue_label, cond_label, body_label});
+        ControlLabels labels;
+labels.break_label = end_label;
+labels.continue_label = continue_label;
+labels.cond_label = cond_label;
+labels.body_label = body_label;
+labels.incr_expr = nullptr;
+control_stack.push(labels);
     } expression_opt SEMICOLON {
         ExprResult* cond = $6;
         string end_label = control_stack.top().break_label;
@@ -1659,7 +1685,13 @@ do_while_head
         string begin_label = tac_gen->newLabel();
         string end_label = tac_gen->newLabel();
         string cond_label = tac_gen->newLabel();
-        control_stack.push({end_label, cond_label});
+        ControlLabels labels;
+labels.break_label = end_label;
+labels.continue_label = cond_label;
+labels.cond_label = "";
+labels.body_label = "";
+labels.incr_expr = nullptr;
+control_stack.push(labels);
         tac_gen->emitLabel(begin_label);
         
         $$ = new std::string(begin_label);
@@ -3083,24 +3115,39 @@ std::string TACGenerator::newLabel() {
 
 void TACGenerator::emit(const std::string& result, const std::string& arg1, 
                         const std::string& op, const std::string& arg2) {
-    outfile << result << " = " << arg1 << " " << op << " " << arg2 << std::endl;
+    std::string folded = tryConstantFoldBinary(arg1, op, arg2, "INT");
+    if (!folded.empty()) {
+        outfile << result << " = " << folded  << std::endl;
+    } else {
+        outfile << result << " = " << arg1 << " " << op << " " << arg2 << std::endl;
+    }
 }
 
 void TACGenerator::emitIntOp(const std::string& result, const std::string& arg1, 
                         const std::string& op, const std::string& arg2) {
-    outfile << result << " = " << arg1 << " " << op << " " << arg2 << "  [INT]" << std::endl;
+    std::string folded = tryConstantFoldBinary(arg1, op, arg2, "INT");
+    if (!folded.empty()) {
+        outfile << result << " = " << folded  << std::endl;
+    } else {
+        outfile << result << " = " << arg1 << " " << op << " " << arg2 << "  [INT]" << std::endl;
+    }
 }
 
 void TACGenerator::emitFloatOp(const std::string& result, const std::string& arg1, 
                         const std::string& op, const std::string& arg2) {
-    outfile << result << " = " << arg1 << " " << op << " " << arg2 << "  [FLOAT]" << std::endl;
+    std::string folded = tryConstantFoldBinary(arg1, op, arg2, "FLOAT");
+    if (!folded.empty()) {
+        outfile << result << " = " << folded  << std::endl;
+    } else {
+        outfile << result << " = " << arg1 << " " << op << " " << arg2 << "  [FLOAT]" << std::endl;
+    }
 }
-
 void TACGenerator::emitAssignment(const std::string& result, const std::string& value) {
     outfile << result << " = " << value << std::endl;
 }
 
 void TACGenerator::emitIntAssignment(const std::string& result, const std::string& value) {
+    // For simple assignments like i1 = 5, we don't need to fold since it's already constant
     outfile << result << " = " << value << "  [int]" << std::endl;
 }
 
@@ -3115,14 +3162,23 @@ void TACGenerator::emitUnary(const std::string& result, const std::string& op,
 
 void TACGenerator::emitIntUnary(const std::string& result, const std::string& op, 
                              const std::string& arg) {
-    outfile << result << " = " << op << arg << "  [INT]" << std::endl;
+    std::string folded = tryConstantFoldUnary(op, arg, "INT");
+    if (!folded.empty()) {
+        outfile << result << " = " << folded  << std::endl;
+    } else {
+        outfile << result << " = " << op << arg << "  [INT]" << std::endl;
+    }
 }
 
 void TACGenerator::emitFloatUnary(const std::string& result, const std::string& op, 
                              const std::string& arg) {
-    outfile << result << " = " << op << arg << "  [FLOAT]" << std::endl;
+    std::string folded = tryConstantFoldUnary(op, arg, "FLOAT");
+    if (!folded.empty()) {
+        outfile << result << " = " << folded  << std::endl;
+    } else {
+        outfile << result << " = " << op << arg << "  [FLOAT]" << std::endl;
+    }
 }
-
 void TACGenerator::emitLabel(const std::string& label) {
     outfile << label << ":" << std::endl;
 }
@@ -3351,6 +3407,152 @@ void TACGenerator::emitComment(const std::string& comment) {
 
 void TACGenerator::emitRaw(const std::string& instruction) {
     outfile << instruction << std::endl;
+}
+
+bool TACGenerator::isConstantValue(const std::string& value) {
+    // Check if the value is a numeric constant (integer or float)
+    if (value.empty()) return false;
+    
+    // Handle negative numbers
+    const char* str = value.c_str();
+    if (*str == '-') str++;
+    
+    // Check if all characters are digits (for integers)
+    bool all_digits = true;
+    bool has_digit = false;
+    bool has_dot = false;
+    
+    for (; *str; str++) {
+        if (*str == '.') {
+            if (has_dot) return false; // Multiple dots
+            has_dot = true;
+        } else if (!isdigit(*str)) {
+            all_digits = false;
+            break;
+        } else {
+            has_digit = true;
+        }
+    }
+    
+    // Valid if: all digits (integer) or has digits and at most one dot (float)
+    return (all_digits && has_digit) || (has_digit && has_dot);
+}
+
+std::string TACGenerator::foldBinaryOperation(const std::string& arg1, const std::string& op, 
+                                             const std::string& arg2, const std::string& type) {
+    if (type == "INT") {
+        int val1 = std::stoi(arg1);
+        int val2 = std::stoi(arg2);
+        int result = 0;
+        
+        if (op == "+") result = val1 + val2;
+        else if (op == "-") result = val1 - val2;
+        else if (op == "*") result = val1 * val2;
+        else if (op == "/") {
+            if (val2 == 0) return ""; // Avoid division by zero
+            result = val1 / val2;
+        }
+        else if (op == "%") {
+            if (val2 == 0) return "";
+            result = val1 % val2;
+        }
+        else if (op == "&") result = val1 & val2;
+        else if (op == "|") result = val1 | val2;
+        else if (op == "^") result = val1 ^ val2;
+        else if (op == "<<") result = val1 << val2;
+        else if (op == ">>") result = val1 >> val2;
+        else if (op == "&&") result = val1 && val2;
+        else if (op == "||") result = val1 || val2;
+        else if (op == "==") result = val1 == val2;
+        else if (op == "!=") result = val1 != val2;
+        else if (op == "<") result = val1 < val2;
+        else if (op == ">") result = val1 > val2;
+        else if (op == "<=") result = val1 <= val2;
+        else if (op == ">=") result = val1 >= val2;
+        else return "";
+        
+        return std::to_string(result);
+    }
+    else if (type == "FLOAT") {
+        double val1 = std::stod(arg1);
+        double val2 = std::stod(arg2);
+        double result = 0.0;
+        
+        if (op == "+") result = val1 + val2;
+        else if (op == "-") result = val1 - val2;
+        else if (op == "*") result = val1 * val2;
+        else if (op == "/") {
+            if (val2 == 0.0) return "";
+            result = val1 / val2;
+        }
+        else if (op == "&&") result = val1 && val2;
+        else if (op == "||") result = val1 || val2;
+        else if (op == "==") result = val1 == val2;
+        else if (op == "!=") result = val1 != val2;
+        else if (op == "<") result = val1 < val2;
+        else if (op == ">") result = val1 > val2;
+        else if (op == "<=") result = val1 <= val2;
+        else if (op == ">=") result = val1 >= val2;
+        else return "";
+        
+        // Format float without trailing zeros
+        std::stringstream ss;
+        ss << std::fixed << std::setprecision(6) << result;
+        std::string str = ss.str();
+        str.erase(str.find_last_not_of('0') + 1, std::string::npos);
+        if (str.back() == '.') str.pop_back();
+        return str;
+    }
+    
+    return "";
+}
+
+std::string TACGenerator::foldUnaryOperation(const std::string& op, const std::string& arg, 
+                                            const std::string& type) {
+    if (type == "INT") {
+        int val = std::stoi(arg);
+        int result = 0;
+        
+        if (op == "-") result = -val;
+        else if (op == "!") result = !val;
+        else if (op == "~") result = ~val;
+        else return "";
+        
+        return std::to_string(result);
+    }
+    else if (type == "FLOAT") {
+        double val = std::stod(arg);
+        double result = 0.0;
+        
+        if (op == "-") result = -val;
+        else if (op == "!") result = !val;
+        else return "";
+        
+        std::stringstream ss;
+        ss << std::fixed << std::setprecision(6) << result;
+        std::string str = ss.str();
+        str.erase(str.find_last_not_of('0') + 1, std::string::npos);
+        if (str.back() == '.') str.pop_back();
+        return str;
+    }
+    
+    return "";
+}
+
+std::string TACGenerator::tryConstantFoldBinary(const std::string& arg1, const std::string& op, 
+                                               const std::string& arg2, const std::string& type) {
+    if (isConstantValue(arg1) && isConstantValue(arg2)) {
+        return foldBinaryOperation(arg1, op, arg2, type);
+    }
+    return "";
+}
+
+std::string TACGenerator::tryConstantFoldUnary(const std::string& op, const std::string& arg, 
+                                              const std::string& type) {
+    if (isConstantValue(arg)) {
+        return foldUnaryOperation(op, arg, type);
+    }
+    return "";
 }
 
 std::string TACGenerator::getOperationType(const std::string& type1, const std::string& type2) {
