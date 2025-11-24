@@ -32,6 +32,8 @@ private:
     int floatParamIndex;
     int stackAllocPlaceholderIndex;
     bool hasParserErrors;
+    bool hasMallocCall;
+    bool hasFreeCall;
     std::vector<std::string> parserErrors;
     std::map<std::string, std::string> globalInitialValues;
 
@@ -1736,8 +1738,10 @@ if (std::regex_search(line, arrayStoreSimpleMatch, arrayStoreSimpleRegex)) {
         generateScanfSubroutines();
         convertScanfCall(numArgs,"");
     } else if (funcName == "malloc") {
+        hasMallocCall=true;
         convertMallocCall(numArgs, resultVar);
     } else if (funcName == "free") {
+        hasFreeCall=true;
         convertFreeCall(numArgs);
     } 
     else {
@@ -2448,7 +2452,7 @@ void generateScanfSubroutines() {
         static bool memorySubroutinesGenerated = false;
         if (memorySubroutinesGenerated) return;
         memorySubroutinesGenerated = true;
-
+        if (!hasMallocCall && !hasFreeCall) return;
         // Store the subroutines separately and add them at the end
         std::vector<std::string> memorySubroutines;
         
@@ -2523,6 +2527,7 @@ void generateScanfSubroutines() {
     std::string data = ".data\n";
     
     // Add free list for malloc/free
+    if (hasMallocCall||hasFreeCall)
     data += "free_list: .word 0          # head of free list\n";
     
     // Array data
@@ -2657,11 +2662,13 @@ void generateScanfSubroutines() {
         }
         
         // Add memory management subroutines
+        if(hasMallocCall||hasFreeCall) {
         generateMemorySubroutines();
         for (const std::string& line : memorySubroutineBuffer) {
             textSection += line + "\n";
         }
     }
+}
     
     return textSection;
 }
