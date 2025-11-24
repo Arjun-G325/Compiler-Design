@@ -902,6 +902,45 @@ public:
         return "# " + line + "\n";
     }
 
+std::regex staticArrayLoadRegex(R"((\w+)\s*=\s*\*(\w+))");
+std::smatch staticArrayMatch;
+if (std::regex_search(line, staticArrayMatch, staticArrayLoadRegex)) {
+    std::string dest = staticArrayMatch[1];
+    std::string ptr = staticArrayMatch[2];
+    
+    // Check if ptr points to a static array
+    if (variableInfo.count(ptr) && !variableInfo[ptr].pointsTo.empty()) {
+        std::string actualVar = variableInfo[ptr].pointsTo;
+        if (arrayDimensions.find(actualVar) != arrayDimensions.end()) {
+            output.push_back("    # STATIC ARRAY LOAD: " + dest + " = *" + ptr + " (which points to " + actualVar + ")\n");
+            std::string destReg = getRegisterForVar(dest, false, false);
+            output.push_back("    lw " + destReg + ", " + sanitizeName(actualVar) + "  # Load " + actualVar + "[0]\n");
+            markDirty(dest, destReg);
+            return "# " + line + "\n";
+        }
+    }
+}
+
+std::regex dynamicArrayLoadRegex(R"((\w+)\s*=\s*\*(\w+))");
+std::smatch dynamicArrayMatch;
+if (std::regex_search(line, dynamicArrayMatch, dynamicArrayLoadRegex)) {
+    std::string dest = dynamicArrayMatch[1];
+    std::string ptr = dynamicArrayMatch[2];
+    
+    // Check if ptr points to a dynamic array
+    if (variableInfo.count(ptr) && !variableInfo[ptr].pointsTo.empty()) {
+        std::string actualVar = variableInfo[ptr].pointsTo;
+        if (arrayDimensions.find(actualVar) == arrayDimensions.end()) {
+            output.push_back("    # DYNAMIC ARRAY LOAD: " + dest + " = *" + ptr + " (which points to " + actualVar + ")\n");
+            std::string tempReg = getRegisterForVar(actualVar, false, true); // Load from stack
+            std::string destReg = getRegisterForVar(dest, false, false);
+            output.push_back("    lw " + destReg + ", 0(" + tempReg + ")  # Load *" + actualVar + " (b[0])\n");
+            markDirty(dest, destReg);
+            return "# " + line + "\n";
+        }
+    }
+}
+
     // Handle array load operations
     std::regex arrayLoadRegex(R"((\w+)\s*=\s*\*(\w+))");
     std::smatch arrayLoadMatch;
@@ -920,46 +959,104 @@ public:
         return "# " + line + "\n";
     }
 
-// In the convertInstruction method, fix the array store operations:
-std::regex arrayStoreRegex(R"(\*\(\s*(\w+)\s*\+\s*([^)]+)\s*\)\s*=\s*([\w\.-]+))");
-std::smatch arrayStoreMatch;
-if (std::regex_search(line, arrayStoreMatch, arrayStoreRegex)) {
-    std::string base = arrayStoreMatch[1];
-    std::string index = arrayStoreMatch[2];
-    std::string value = arrayStoreMatch[3];
+// In the convertInstruction method, fix the simple pointer store handler:
+
+// In the simple pointer store handler, fix the static array case:
+
+// Handle simple pointer store: *ptr = value  
+std::regex simplePtrStoreRegex(R"(\*(\w+)\s*=\s*([\w\.-]+))");
+std::smatch simplePtrStoreMatch;
+if (std::regex_search(line, simplePtrStoreMatch, simplePtrStoreRegex)) {
+    std::string ptr = simplePtrStoreMatch[1];
+    std::string value = simplePtrStoreMatch[2];
     
-    output.push_back("    # ARRAY STORE: *(" + base + " + " + index + ") = " + value + "\n");
+    output.push_back("    # SIMPLE POINTER STORE: *" + ptr + " = " + value + "\n");
     
-    // All arrays are global - use la to get base address
-    if (arrayDimensions.find(base) != arrayDimensions.end()) {
-        // Global array - use la to get base address
-        output.push_back("    la $v0, " + sanitizeName(base) + "  # Load global array base address\n");
+    // Check if this is a pointer-to-pointer (like &b case)
+    if (variableInfo.count(ptr) && !variableInfo[ptr].pointsTo.empty()) {
+        // This is a pointer that points to another variable (like t8 = &b)
+        std::string actualVar = variableInfo[ptr].pointsTo;
+        output.push_back("    # " + ptr + " points to " + actualVar + "\n");
+        
+        // Check if the actual variable is a static array
+        if (arrayDimensions.find(actualVar) != arrayDimensions.end()) {
+            // Static array - use its global address directly
+            if (std::regex_match(value, std::regex(R"(\d+)"))) {
+                output.push_back("    li $t9, " + value + "  # Load immediate value\n");
+                output.push_back("    sw $t9, " + sanitizeName(actualVar) + "  # Store to " + actualVar + "[0]\n");
+            } else {
+                std::string valueReg = getRegisterForVar(value, false, true);
+                output.push_back("    sw " + valueReg + ", " + sanitizeName(actualVar) + "  # Store to " + actualVar + "[0]\n");
+            }
+        } else {
+            // Regular pointer variable (like b from malloc)
+            // Get the actual pointer value (the malloc address stored in b)
+            std::string actualPtrReg = getRegisterForVar(actualVar, false, true);
+            
+            // Store to the memory location pointed to by b
+            if (std::regex_match(value, std::regex(R"(\d+)"))) {
+                output.push_back("    li $t9, " + value + "  # Load immediate value\n");
+                output.push_back("    sw $t9, 0(" + actualPtrReg + ")  # Store to *" + actualVar + " (b[0])\n");
+            } else {
+                std::string valueReg = getRegisterForVar(value, false, true);
+                output.push_back("    sw " + valueReg + ", 0(" + actualPtrReg + ")  # Store to *" + actualVar + " (b[0])\n");
+            }
+        }
     } else {
-        // Regular pointer variable - get from register
-        std::string baseReg = getRegisterForVar(base, false, true);
-        output.push_back("    move $v0, " + baseReg + "  # Use pointer as base address\n");
+        // Regular pointer dereference - store to memory
+        std::string ptrReg = getRegisterForVar(ptr, false, true);
+        
+        if (std::regex_match(value, std::regex(R"(\d+)"))) {
+            output.push_back("    li $t9, " + value + "  # Load immediate value\n");
+            output.push_back("    sw $t9, 0(" + ptrReg + ")  # Store *" + ptr + "\n");
+        } else {
+            std::string valueReg = getRegisterForVar(value, false, true);
+            output.push_back("    sw " + valueReg + ", 0(" + ptrReg + ")  # Store *" + ptr + "\n");
+        }
     }
     
-    // Calculate offset - use $v1 for offset calculation
-    if (std::regex_match(index, std::regex(R"(\d+)"))) {
-        // Literal offset - always load into register first and multiply by 4
-        int offsetVal = std::stoi(index);
-        output.push_back("    li $v1, " + std::to_string(offsetVal) + " # Load index literal\n");
-        output.push_back("    sll $v1, $v1, 2  # Multiply index by 4\n");
-        output.push_back("    add $v0, $v0, $v1  # Calculate address\n");
-    } else {
-        std::string indexReg = getRegisterForVar(index, false, true);
-        output.push_back("    sll $v1, " + indexReg + ", 2  # Multiply index by 4\n");
-        output.push_back("    add $v0, $v0, $v1  # Calculate address\n");
-    }
+    return "# " + line + "\n";
+}
+
+// Fix the simple pointer load handler:
+
+// Handle simple pointer load: x = *ptr
+std::regex simplePtrLoadRegex(R"((\w+)\s*=\s*\*(\w+))");
+std::smatch simplePtrLoadMatch;
+if (std::regex_search(line, simplePtrLoadMatch, simplePtrLoadRegex)) {
+    std::string dest = simplePtrLoadMatch[1];
+    std::string ptr = simplePtrLoadMatch[2];
     
-    // Store value - use $t9 for the value (safe temporary register reserved for array operations)
-    if (std::regex_match(value, std::regex(R"(\d+)"))) {
-        output.push_back("    li $t9, " + value + "  # Load immediate value\n");
-        output.push_back("    sw $t9, 0($v0)  # Store array element\n");
+    output.push_back("    # SIMPLE POINTER LOAD: " + dest + " = *" + ptr + "\n");
+    
+    // Check if this is a pointer-to-pointer (like &b case)
+    if (variableInfo.count(ptr) && !variableInfo[ptr].pointsTo.empty()) {
+        // This is a pointer that points to another variable (like t7 = &b)
+        std::string actualVar = variableInfo[ptr].pointsTo;
+        output.push_back("    # " + ptr + " points to " + actualVar + "\n");
+        
+        // Check if the actual variable is a static array
+        if (arrayDimensions.find(actualVar) != arrayDimensions.end()) {
+            // Static array - load from its global address directly
+            std::string destReg = getRegisterForVar(dest, false, false);
+            output.push_back("    lw " + destReg + ", " + sanitizeName(actualVar) + "  # Load " + actualVar + "[0]\n");
+            markDirty(dest, destReg);
+        } else {
+            // Regular pointer variable (like b from malloc)
+            // We need to do TWO loads:
+            // 1. Load the pointer value from the actual variable (b from stack)
+            // 2. Load from the address stored in that pointer
+            std::string tempReg = getRegisterForVar(actualVar, false, true); // Load b from stack
+            std::string destReg = getRegisterForVar(dest, false, false);
+            output.push_back("    lw " + destReg + ", 0(" + tempReg + ")  # Load *" + actualVar + " (b[0])\n");
+            markDirty(dest, destReg);
+        }
     } else {
-        std::string valueReg = getRegisterForVar(value, false, true);
-        output.push_back("    sw " + valueReg + ", 0($v0)  # Store array element\n");
+        // Regular pointer dereference - load from memory
+        std::string ptrReg = getRegisterForVar(ptr, false, true);
+        std::string destReg = getRegisterForVar(dest, false, false);
+        output.push_back("    lw " + destReg + ", 0(" + ptrReg + ")  # Load *" + ptr + "\n");
+        markDirty(dest, destReg);
     }
     
     return "# " + line + "\n";
@@ -1015,46 +1112,102 @@ if (std::regex_search(line, arrayStoreSimpleMatch, arrayStoreSimpleRegex)) {
     }
 
     // Handle array indexing operations
-    std::regex arrayIndexRegex(R"((\w+)\s*=\s*\*\(\s*(\w+)\s*\+\s*([^)]+)\s*\))");
-    std::smatch arrayMatch;
-    if (std::regex_search(line, arrayMatch, arrayIndexRegex)) {
-        std::string dest = arrayMatch[1];
-        std::string base = arrayMatch[2];
-        std::string index = arrayMatch[3];
-        
-        output.push_back("    # ARRAY INDEXING: " + dest + " = *(" + base + " + " + index + ")\n");
-        
-        // All arrays are global - use la to get base address
-        if (arrayDimensions.find(base) != arrayDimensions.end()) {
-            // Global array - use la to get base address
-            output.push_back("    la $v0, " + sanitizeName(base) + "  # Load global array base address\n");
+std::regex arrayIndexRegex(R"((\w+)\s*=\s*\*\(\s*(\w+)\s*\+\s*([^)]+)\s*\))");
+std::smatch arrayMatch;
+if (std::regex_search(line, arrayMatch, arrayIndexRegex)) {
+    std::string dest = arrayMatch[1];
+    std::string base = arrayMatch[2];
+    std::string index = arrayMatch[3];
+    
+    output.push_back("    # ARRAY INDEXING: " + dest + " = *(" + base + " + " + index + ")\n");
+    
+    // Check if this is a global array or a pointer
+    if (arrayDimensions.find(base) != arrayDimensions.end()) {
+        // Global array - use la to get base address
+        output.push_back("    la $v0, " + sanitizeName(base) + "  # Load global array base address\n");
+    } else {
+        // Regular pointer variable (like malloc result) - get from register
+        std::string baseReg = getRegisterForVar(base, false, true);
+        output.push_back("    move $v0, " + baseReg + "  # Use pointer as base address\n");
+    }
+    
+    // Calculate offset
+    if (std::regex_match(index, std::regex(R"(\d+)"))) {
+        int offsetVal = std::stoi(index);
+        if (offsetVal == 0) {
+            // Offset is 0 - no calculation needed, use base directly
+            output.push_back("    # Zero offset - using base address directly\n");
         } else {
-            // Regular pointer variable - get from register
-            std::string baseReg = getRegisterForVar(base, false, true);
-            output.push_back("    move $v0, " + baseReg + "  # Use pointer as base address\n");
-        }
-        
-        // Calculate offset - use $v1 for offset calculation
-        if (std::regex_match(index, std::regex(R"(\d+)"))) {
-            // Literal offset - always load into register first and multiply by 4
-            int offsetVal = std::stoi(index);
+            // Non-zero offset - calculate
             output.push_back("    li $v1, " + std::to_string(offsetVal) + " # Load index literal\n");
             output.push_back("    sll $v1, $v1, 2  # Multiply index by 4\n");
             output.push_back("    add $v0, $v0, $v1  # Calculate address\n");
+        }
+    } else {
+        // Variable offset
+        std::string indexReg = getRegisterForVar(index, false, true);
+        output.push_back("    sll $v1, " + indexReg + ", 2  # Multiply index by 4\n");
+        output.push_back("    add $v0, $v0, $v1  # Calculate address\n");
+    }
+    
+    // Load value
+    std::string destReg = getRegisterForVar(dest, false, false);
+    output.push_back("    lw " + destReg + ", 0($v0)  # Load array element\n");
+    markDirty(dest, destReg);
+    
+    return "# " + line + "\n";
+}
+
+// Handle array store operations
+std::regex arrayStoreRegex(R"(\*\(\s*(\w+)\s*\+\s*([^)]+)\s*\)\s*=\s*([\w\.-]+))");
+std::smatch arrayStoreMatch;
+if (std::regex_search(line, arrayStoreMatch, arrayStoreRegex)) {
+    std::string base = arrayStoreMatch[1];
+    std::string index = arrayStoreMatch[2];
+    std::string value = arrayStoreMatch[3];
+    
+    output.push_back("    # ARRAY STORE: *(" + base + " + " + index + ") = " + value + "\n");
+    
+    // Check if this is a global array or a pointer
+    if (arrayDimensions.find(base) != arrayDimensions.end()) {
+        // Global array - use la to get base address
+        output.push_back("    la $v0, " + sanitizeName(base) + "  # Load global array base address\n");
+    } else {
+        // Regular pointer variable (like malloc result) - get from register
+        std::string baseReg = getRegisterForVar(base, false, true);
+        output.push_back("    move $v0, " + baseReg + "  # Use pointer as base address\n");
+    }
+    
+    // Calculate offset
+    if (std::regex_match(index, std::regex(R"(\d+)"))) {
+        int offsetVal = std::stoi(index);
+        if (offsetVal == 0) {
+            // Offset is 0 - no calculation needed, use base directly
+            output.push_back("    # Zero offset - using base address directly\n");
         } else {
-            // Variable offset - multiply by 4
-            std::string indexReg = getRegisterForVar(index, false, true);
-            output.push_back("    sll $v1, " + indexReg + ", 2  # Multiply index by 4\n");
+            // Non-zero offset - calculate
+            output.push_back("    li $v1, " + std::to_string(offsetVal) + " # Load index literal\n");
+            output.push_back("    sll $v1, $v1, 2  # Multiply index by 4\n");
             output.push_back("    add $v0, $v0, $v1  # Calculate address\n");
         }
-        
-        // Load value
-        std::string destReg = getRegisterForVar(dest, false, false);
-        output.push_back("    lw " + destReg + ", 0($v0)  # Load array element\n");
-        markDirty(dest, destReg);
-        
-        return "# " + line + "\n";
+    } else {
+        // Variable offset
+        std::string indexReg = getRegisterForVar(index, false, true);
+        output.push_back("    sll $v1, " + indexReg + ", 2  # Multiply index by 4\n");
+        output.push_back("    add $v0, $v0, $v1  # Calculate address\n");
     }
+    
+    // Store value
+    if (std::regex_match(value, std::regex(R"(\d+)"))) {
+        output.push_back("    li $t9, " + value + "  # Load immediate value\n");
+        output.push_back("    sw $t9, 0($v0)  # Store array element\n");
+    } else {
+        std::string valueReg = getRegisterForVar(value, false, true);
+        output.push_back("    sw " + valueReg + ", 0($v0)  # Store array element\n");
+    }
+    
+    return "# " + line + "\n";
+}
 
     std::regex callRegex(R"((\w+)\s*=\s*call\s*(\w+)\s*,\s*(\d+))");
     std::smatch match;
@@ -1422,31 +1575,47 @@ if (std::regex_search(line, arrayStoreSimpleMatch, arrayStoreSimpleRegex)) {
     }
 
     std::regex loadSimpleRegex(R"((\w+)\s*=\s*\*(\w+))");
-    if (std::regex_search(line, match, loadSimpleRegex)) {
-        std::string dest = match[1];
-        std::string ptr = match[2];
+if (std::regex_search(line, match, loadSimpleRegex)) {
+    std::string dest = match[1];
+    std::string ptr = match[2];
+    
+    output.push_back("    # LOAD OPERATION: " + dest + " = *" + ptr + "\n");
+    
+    // Check if this is a pointer-to-pointer case
+    if (variableInfo.count(ptr) && !variableInfo[ptr].pointsTo.empty()) {
+        std::string actualVar = variableInfo[ptr].pointsTo;
+        output.push_back("    # " + ptr + " points to " + actualVar + "\n");
         
-        output.push_back("    # LOAD OPERATION: " + dest + " = *" + ptr + "\n");
-        
-        // Infer type from the pointer variable
+        // Check if the actual variable is a static array
+        if (arrayDimensions.find(actualVar) != arrayDimensions.end()) {
+            // Static array - load directly from global address
+            std::string destReg = getRegisterForVar(dest, false, false);
+            output.push_back("    lw " + destReg + ", " + sanitizeName(actualVar) + "  # Load " + actualVar + "[0]\n");
+            markDirty(dest, destReg);
+        } else {
+            // Dynamic array - need to do two loads
+            std::string tempReg = getRegisterForVar(actualVar, false, true); // Load the pointer value
+            std::string destReg = getRegisterForVar(dest, false, false);
+            output.push_back("    lw " + destReg + ", 0(" + tempReg + ")  # Load *" + actualVar + " (b[0])\n");
+            markDirty(dest, destReg);
+        }
+    } else {
+        // Regular pointer dereference
         bool isFloat = isFloatVar(ptr);
-        
-        // Load the pointer value (address) into a register
-        std::string ptrReg = getRegisterForVar(ptr, false, true); // loadValue = true
-        
-        output.push_back("    # Pointer " + ptr + " contains address in register " + ptrReg + "\n");
+        std::string ptrReg = getRegisterForVar(ptr, false, true);
         
         if (isFloat) {
-            std::string destReg = getRegisterForVar(dest, true, false); // loadValue = false
+            std::string destReg = getRegisterForVar(dest, true, false);
             output.push_back("    l.s " + destReg + ", 0(" + ptrReg + ")  # " + dest + " = *" + ptr + " (float)\n");
             markDirty(dest, destReg);
         } else {
-            std::string destReg = getRegisterForVar(dest, false, false); // loadValue = false
+            std::string destReg = getRegisterForVar(dest, false, false);
             output.push_back("    lw " + destReg + ", 0(" + ptrReg + ")  # " + dest + " = *" + ptr + " (int)\n");
             markDirty(dest, destReg);
         }
-        return "# " + line + "\n";
     }
+    return "# " + line + "\n";
+}
     
     std::regex loadRegex(R"((\w+)\s*=\s*\*(\w+)\s*\[(\w+)\])");
     if (std::regex_search(line, match, loadRegex)) {
