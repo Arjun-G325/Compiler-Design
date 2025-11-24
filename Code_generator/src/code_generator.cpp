@@ -270,7 +270,7 @@ public:
             if (loadValue && variableInfo.find(var) != variableInfo.end() && 
                 variableInfo[var].stackOffset != -1 && !variableInfo[var].dirty) {
                 // The variable exists on stack and register copy might be stale, reload it
-                output.push_back("    # Reloading " + var + " from stack to " + reg + " (stale register)\n");
+                
                 if (isFloat) {
                     output.push_back("    l.s " + reg + ", " + std::to_string(variableInfo[var].stackOffset) + "($fp)\n");
                 } else {
@@ -295,7 +295,7 @@ public:
                     output.push_back("    la " + reg + ", " + sanitizeName(var) + "  # Load global array address\n");
                 }
                 else if (variableInfo.find(var) != variableInfo.end() && variableInfo[var].stackOffset != -1) {
-                    output.push_back("    # Loading " + var + " from stack to " + reg + "\n");
+                   
                     if (isFloat) {
                         output.push_back("    l.s " + reg + ", " + std::to_string(variableInfo[var].stackOffset) + "($fp)\n");
                     } else {
@@ -315,11 +315,9 @@ public:
                     !std::regex_match(var, std::regex(R"(-?\d+\.\d+)")) && 
                     var.find("'") != 0 && var.find("\"") != 0) {
                     
-                    output.push_back("    # WARNING: Variable " + var + " may be uninitialized\n");
+                   
                 }
-            } else {
-                 output.push_back("    # Allocating " + reg + " for " + var + "\n");
-            }
+            } 
             
             // Update variable info
             if (variableInfo.find(var) == variableInfo.end()) {
@@ -383,10 +381,10 @@ public:
             !std::regex_match(var, std::regex(R"(-?\d+\.\d+)")) && 
             var.find("'") != 0 && var.find("\"") != 0) {
             
-            output.push_back("    # WARNING: Variable " + var + " may be uninitialized\n");
+           
         }
     } else {
-        output.push_back("    # Allocating " + lruReg + " for " + var + " \n");
+        
     }
     
     // Update variable info
@@ -418,7 +416,7 @@ public:
     
     if (isGlobalVar(var)) {
         // Spill to global memory (for non-array globals)
-        output.push_back("    # Spilling " + var + " from " + reg + " to global memory\n");
+        
         if (isFloat) {
             output.push_back("    s.s " + reg + ", " + sanitizeName(var) + "\n");
         } else {
@@ -431,7 +429,7 @@ public:
             allocateStackSpace(var);
         }
         
-        output.push_back("    # Spilling " + var + " from " + reg + " to stack\n");
+        
         if (isFloat) {
             output.push_back("    s.s " + reg + ", " + std::to_string(variableInfo[var].stackOffset) + "($fp)\n");
         } else {
@@ -1081,10 +1079,8 @@ if (std::regex_search(line, arrayStoreSimpleMatch, arrayStoreSimpleRegex)) {
             convertIntOperation(dest, left, op, right);
         } else {
             if (isFloatVar(left) || isFloatVar(right) || std::regex_match(left, std::regex(R"(-?\d+\.\d+)")) || std::regex_match(right, std::regex(R"(-?\d+\.\d+)"))) {
-                output.push_back("    # Inferred type as FLOAT from operands\n");
                 convertFloatOperation(dest, left, op, right);
             } else { 
-                output.push_back("    # Inferred type as INT from operands\n");
                 convertIntOperation(dest, left, op, right);
             }
         }
@@ -1789,11 +1785,9 @@ if (std::regex_search(line, arrayStoreSimpleMatch, arrayStoreSimpleRegex)) {
     bool isFloat = isFloatVar(arg);
     std::string argReg;
     
-    // Special handling for global arrays - DON'T load their address
+    
     if (arrayDimensions.find(arg) != arrayDimensions.end()) {
-        // Skip passing global arrays as arguments - they're accessible globally
-        output.push_back("    # Skipping global array " + arg + " in argument passing\n");
-        continue; // Skip this argument entirely
+        continue; 
     } else {
         argReg = getRegisterForVar(arg, isFloat, true);
     }
@@ -2070,8 +2064,6 @@ if (std::regex_search(line, arrayStoreSimpleMatch, arrayStoreSimpleRegex)) {
         }
     }
     
-    output.push_back("    # Processing " + std::to_string(addressVars.size()) + " variables for scanf\n");
-
     // Parse variables according to format string specifiers
     int addrIndex = 0;
     for (size_t i = 0; i < actualFormatString.length() && addrIndex < (int)addressVars.size(); i++) {
@@ -2088,8 +2080,6 @@ if (std::regex_search(line, arrayStoreSimpleMatch, arrayStoreSimpleRegex)) {
 
             // Get the pointer register for this address
             std::string addrReg = getRegisterForVar(addrHolderVar, false, true); // loadValue = true
-
-            output.push_back("    # Parsing " + std::string(1, specifier) + " for variable " + addrHolderVar + "\n");
 
             if (specifier == 'd' || specifier == 'i') {
                 // Parse integer
@@ -2147,7 +2137,6 @@ if (std::regex_search(line, arrayStoreSimpleMatch, arrayStoreSimpleRegex)) {
             targetVar = addrVar;
         }
         
-        output.push_back("    # Invalidating cached registers for " + targetVar + "\n");
         if (variableInfo.count(targetVar)) {
             variableInfo[targetVar].dirty = false;
             std::set<std::string> regsToRemove = variableInfo[targetVar].registers;
