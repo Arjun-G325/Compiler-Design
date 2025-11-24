@@ -1042,10 +1042,6 @@ if (std::regex_search(line, simplePtrLoadMatch, simplePtrLoadRegex)) {
             output.push_back("    lw " + destReg + ", " + sanitizeName(actualVar) + "  # Load " + actualVar + "[0]\n");
             markDirty(dest, destReg);
         } else {
-            // Regular pointer variable (like b from malloc)
-            // We need to do TWO loads:
-            // 1. Load the pointer value from the actual variable (b from stack)
-            // 2. Load from the address stored in that pointer
             std::string tempReg = getRegisterForVar(actualVar, false, true); // Load b from stack
             std::string destReg = getRegisterForVar(dest, false, false);
             output.push_back("    lw " + destReg + ", 0(" + tempReg + ")  # Load *" + actualVar + " (b[0])\n");
