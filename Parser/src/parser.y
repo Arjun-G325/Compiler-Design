@@ -1078,7 +1078,7 @@ init_declarator
     std::vector<InitializerItem*>* initializers = $3;
     
     if (!sym->type->array_dimensions.empty()) {
-        tac_gen->emitComment("Array initialization: " + sym->name);
+       
         
         int element_size = 4;
         if (sym->type->base_type == "float") element_size = 4;
